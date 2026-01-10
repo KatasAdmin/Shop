@@ -102,10 +102,7 @@ def admin_menu():
 # ---------------- FSM STATES ----------------
 class AdminStates(StatesGroup):
     add_category = State()
-    add_subcategory_category = State()
     add_subcategory_name = State()
-    add_product_category = State()
-    add_product_subcategory = State()
     add_product_name = State()
     add_product_price = State()
     add_product_description = State()
