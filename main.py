@@ -9,6 +9,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
+# ------------------- FSM STATES -------------------
+class AdminStates(StatesGroup):
+    add_category = State()
+    add_subcategory_category = State()
+    add_subcategory_name = State()
+    add_product_category = State()
+    add_product_subcategory = State()
+    add_product_name = State()
+    add_product_price = State()
+    add_product_description = State()
+    add_product_photos = State()  # новий стан для фото
+    add_manager = State()
+
 # ------------------- Токен бота та адміністратор -------------------
 TELEGRAM_TOKEN = "8525972479:AAGyRAVgDD8AJ5LJ9yUzCqvTPZ2nej6OBdY"
 ADMIN_ID = 8385663990  # твій ID
