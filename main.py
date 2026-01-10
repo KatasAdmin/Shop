@@ -40,7 +40,6 @@ user_history = {}
 CATEGORIES = {}  # {"Категория": {"Подкатегория": [товары]}}
 managers = []
 
-
 def save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump({
@@ -87,28 +86,33 @@ def back_to_main():
     )
 
 
-def search_keyboard():
+def admin_menu():
     return types.ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="Цена 0-1000")],
-            [types.KeyboardButton(text="Цена 1000+")],
+            [types.KeyboardButton(text="➕ Добавить категорию"), types.KeyboardButton(text="➖ Удалить категорию")],
+            [types.KeyboardButton(text="➕ Добавить подкатегорию"), types.KeyboardButton(text="➖ Удалить подкатегорию")],
+            [types.KeyboardButton(text="➕ Добавить товар")],
             [types.KeyboardButton(text="⬅️ Главное меню")]
         ],
         resize_keyboard=True
     )
-
-# ---------------- HANDLERS ----------------
+    # ---------------- HANDLERS ----------------
 @dp.message()
 async def handle_message(message: types.Message):
     text = (message.text or "").strip()
     user_id = str(message.from_user.id)
     load_data()
 
+    # ---------------- /start ----------------
     if text == "/start":
-        await message.answer("Привет! Добро пожаловать 👇", reply_markup=main_menu())
+        if int(user_id) == ADMIN_ID:
+            await message.answer("Привет, админ! Выберите действие 👇", reply_markup=admin_menu())
+        else:
+            await message.answer("Привет! Добро пожаловать 👇", reply_markup=main_menu())
         return
 
-    if text == "🛍 Каталог":
+    # ---------------- КАТАЛОГ ----------------
+    if text == "🛍 Каталог" or text == "⬅️ Главное меню":
         if not CATEGORIES:
             await message.answer("Каталог пуст.", reply_markup=main_menu())
             return
@@ -121,6 +125,7 @@ async def handle_message(message: types.Message):
         await message.answer("Выберите категорию:", reply_markup=kb)
         return
 
+    # ---------------- КОРЗИНА ----------------
     if text == "🧺 Корзина":
         cart = user_carts.get(user_id, [])
         if not cart:
@@ -131,6 +136,7 @@ async def handle_message(message: types.Message):
         await message.answer(f"{items_text}\n\n💰 Итого: ${total}", reply_markup=back_to_main())
         return
 
+    # ---------------- ИСТОРИЯ ----------------
     if text == "📦 История заказов":
         history = user_history.get(user_id, [])
         if not history:
@@ -143,6 +149,7 @@ async def handle_message(message: types.Message):
         await message.answer("\n".join(lines), reply_markup=main_menu())
         return
 
+    # ---------------- ПОДДЕРЖКА ----------------
     if text == "📞 Поддержка":
         if not managers:
             await message.answer("Нет доступных менеджеров.", reply_markup=main_menu())
@@ -155,70 +162,66 @@ async def handle_message(message: types.Message):
         await message.answer("Менеджер уведомлен.", reply_markup=main_menu())
         return
 
+    # ---------------- ИЗБРАННОЕ ----------------
     if text == "❤️ Избранное":
         await message.answer("Здесь будут ваши любимые товары.", reply_markup=main_menu())
         return
 
-    if text == "🔍 Поиск":
-        await message.answer("Выберите фильтр:", reply_markup=search_keyboard())
-        return
+    # ---------------- АДМИН-ПАНЕЛЬ ----------------
+    if int(user_id) == ADMIN_ID:
+        if text == "➕ Добавить категорию":
+            await message.answer("Введите название новой категории:")
+            dp.current_state(user=message.from_user.id).set_state("add_category")
+            return
 
-    await message.answer("Выберите действие из меню 👇", reply_markup=main_menu())
-
-# ---------------- CALLBACKS ----------------
-@dp.callback_query()
-async def callbacks(cb: types.CallbackQuery):
-    user_id = str(cb.from_user.id)
-    data = cb.data
-
-    if data == "back_main":
-        await cb.message.answer("Главное меню:", reply_markup=main_menu())
-        await cb.answer()
-        return
-
-    if data.startswith("cat_"):
-        cat = data[4:]
-        subs = CATEGORIES.get(cat, {})
-        kb = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [types.InlineKeyboardButton(text=sub, callback_data=f"sub_{cat}_{sub}")]
-                for sub in subs
-            ] + [[types.InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]]
-        )
-        await cb.message.answer("Подкатегории:", reply_markup=kb)
-        await cb.answer()
-        return
-
-    if data.startswith("sub_"):
-        _, cat, sub = data.split("_", 2)
-        products = CATEGORIES.get(cat, {}).get(sub, [])
-        for p in products:
+        if text == "➖ Удалить категорию":
+            if not CATEGORIES:
+                await message.answer("Нет категорий для удаления.")
+                return
             kb = types.InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [types.InlineKeyboardButton(text="🛒 В корзину", callback_data=f"buy_{cat}_{sub}_{p['name']}")]
+                    [types.InlineKeyboardButton(text=cat, callback_data=f"delcat_{cat}")] for cat in CATEGORIES.keys()
                 ]
             )
-            await cb.message.answer(
-                f"{p['name']}\n${p['price']}\n{p['description']}",
-                reply_markup=kb,
+            await message.answer("Выберите категорию для удаления:", reply_markup=kb)
+            return
+
+        if text == "➕ Добавить подкатегорию":
+            if not CATEGORIES:
+                await message.answer("Сначала добавьте категорию.")
+                return
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text=cat, callback_data=f"addsub_{cat}")] for cat in CATEGORIES.keys()
+                ]
             )
-        await cb.answer()
-        return
+            await message.answer("Выберите категорию для новой подкатегории:", reply_markup=kb)
+            return
 
-    if data.startswith("buy_"):
-        _, cat, sub, name = data.split("_", 3)
-        product = next(p for p in CATEGORIES[cat][sub] if p["name"] == name)
-        user_carts.setdefault(user_id, []).append(product)
-        save_data()
-        await cb.message.answer("Добавлено в корзину ✅", reply_markup=main_menu())
-        await cb.answer()
+        if text == "➖ Удалить подкатегорию":
+            if not CATEGORIES:
+                await message.answer("Категории отсутствуют.")
+                return
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text=cat, callback_data=f"delsubcat_{cat}")] for cat in CATEGORIES.keys()
+                ]
+            )
+            await message.answer("Выберите категорию, из которой удалять подкатегорию:", reply_markup=kb)
+            return
 
-# ---------------- START ----------------
-async def main():
-    load_data()
-    print("🚀 Бот запущен")
-    await dp.start_polling(bot)
+        if text == "➕ Добавить товар":
+            if not CATEGORIES:
+                await message.answer("Сначала добавьте категорию и подкатегорию.")
+                return
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text=f"{cat} -> {sub}", callback_data=f"addprod_{cat}_{sub}")]
+                    for cat, subs in CATEGORIES.items() for sub in subs.keys()
+                ]
+            )
+            await message.answer("Выберите подкатегорию для нового товара:", reply_markup=kb)
+            return
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    # ---------------- НЕПРЕДУСМОТРЕННОЕ ----------------
+    await message.answer("Выберите действие из меню 👇", reply_markup=main_menu())
