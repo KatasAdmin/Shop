@@ -19,12 +19,10 @@ if os.path.exists(LOCK_FILE):
 with open(LOCK_FILE, "w") as f:
     f.write("lock")
 
-
 def shutdown():
     if os.path.exists(LOCK_FILE):
         os.remove(LOCK_FILE)
     sys.exit(0)
-
 
 signal.signal(signal.SIGTERM, lambda *_: shutdown())
 signal.signal(signal.SIGINT, lambda *_: shutdown())
@@ -48,7 +46,6 @@ def save_data():
             "categories": CATEGORIES,
             "managers": managers
         }, f, ensure_ascii=False, indent=4)
-
 
 def load_data():
     global user_carts, user_history, CATEGORIES, managers
@@ -78,13 +75,11 @@ def main_menu():
         resize_keyboard=True
     )
 
-
 def back_to_main():
     return types.ReplyKeyboardMarkup(
         keyboard=[[types.KeyboardButton(text="⬅️ Главное меню")]],
         resize_keyboard=True
     )
-
 
 def admin_menu():
     return types.ReplyKeyboardMarkup(
@@ -96,7 +91,8 @@ def admin_menu():
         ],
         resize_keyboard=True
     )
-    # ---------------- HANDLERS ----------------
+
+# ---------------- HANDLERS ----------------
 @dp.message()
 async def handle_message(message: types.Message):
     text = (message.text or "").strip()
@@ -117,10 +113,7 @@ async def handle_message(message: types.Message):
             await message.answer("Каталог пуст.", reply_markup=main_menu())
             return
         kb = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [types.InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}")]
-                for cat in CATEGORIES.keys()
-            ]
+            inline_keyboard=[[types.InlineKeyboardButton(text=cat, callback_data=f"cat_{cat}")] for cat in CATEGORIES.keys()]
         )
         await message.answer("Выберите категорию:", reply_markup=kb)
         return
@@ -142,10 +135,7 @@ async def handle_message(message: types.Message):
         if not history:
             await message.answer("История пуста.", reply_markup=main_menu())
             return
-        lines = []
-        for i, order in enumerate(history, 1):
-            items = ", ".join(p["name"] for p in order["items"])
-            lines.append(f"{i}. {items} — ${order['total']}")
+        lines = [f"{i+1}. {', '.join(p['name'] for p in order['items'])} — ${order['total']}" for i, order in enumerate(history)]
         await message.answer("\n".join(lines), reply_markup=main_menu())
         return
 
@@ -171,45 +161,34 @@ async def handle_message(message: types.Message):
     if int(user_id) == ADMIN_ID:
         if text == "➕ Добавить категорию":
             await message.answer("Введите название новой категории:")
-            dp.current_state(user=message.from_user.id).set_state("add_category")
             return
-
         if text == "➖ Удалить категорию":
             if not CATEGORIES:
                 await message.answer("Нет категорий для удаления.")
                 return
             kb = types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text=cat, callback_data=f"delcat_{cat}")] for cat in CATEGORIES.keys()
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text=cat, callback_data=f"delcat_{cat}")] for cat in CATEGORIES.keys()]
             )
             await message.answer("Выберите категорию для удаления:", reply_markup=kb)
             return
-
         if text == "➕ Добавить подкатегорию":
             if not CATEGORIES:
                 await message.answer("Сначала добавьте категорию.")
                 return
             kb = types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text=cat, callback_data=f"addsub_{cat}")] for cat in CATEGORIES.keys()
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text=cat, callback_data=f"addsub_{cat}")] for cat in CATEGORIES.keys()]
             )
             await message.answer("Выберите категорию для новой подкатегории:", reply_markup=kb)
             return
-
         if text == "➖ Удалить подкатегорию":
             if not CATEGORIES:
                 await message.answer("Категории отсутствуют.")
                 return
             kb = types.InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [types.InlineKeyboardButton(text=cat, callback_data=f"delsubcat_{cat}")] for cat in CATEGORIES.keys()
-                ]
+                inline_keyboard=[[types.InlineKeyboardButton(text=cat, callback_data=f"delsubcat_{cat}")] for cat in CATEGORIES.keys()]
             )
             await message.answer("Выберите категорию, из которой удалять подкатегорию:", reply_markup=kb)
             return
-
         if text == "➕ Добавить товар":
             if not CATEGORIES:
                 await message.answer("Сначала добавьте категорию и подкатегорию.")
@@ -225,3 +204,89 @@ async def handle_message(message: types.Message):
 
     # ---------------- НЕПРЕДУСМОТРЕННОЕ ----------------
     await message.answer("Выберите действие из меню 👇", reply_markup=main_menu())
+
+# ---------------- CALLBACKS ----------------
+@dp.callback_query()
+async def callbacks(cb: types.CallbackQuery):
+    user_id = str(cb.from_user.id)
+    data = cb.data
+
+    # ----------- КАТЕГОРИИ / ПОДКАТЕГОРИИ -----------
+    if data.startswith("cat_"):
+        cat = data[4:]
+        subs = CATEGORIES.get(cat, {})
+        kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text=sub, callback_data=f"sub_{cat}_{sub}")] for sub in subs] +
+            [[types.InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]]
+        )
+        await cb.message.answer("Подкатегории:", reply_markup=kb)
+        await cb.answer()
+        return
+
+    if data.startswith("sub_"):
+        _, cat, sub = data.split("_", 2)
+        products = CATEGORIES.get(cat, {}).get(sub, [])
+        for p in products:
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[[types.InlineKeyboardButton(text="🛒 В корзину", callback_data=f"buy_{cat}_{sub}_{p['name']}")]]
+            )
+            await cb.message.answer(f"{p['name']}\n${p['price']}\n{p['description']}", reply_markup=kb)
+        await cb.answer()
+        return
+
+    if data.startswith("buy_"):
+        _, cat, sub, name = data.split("_", 3)
+        product = next(p for p in CATEGORIES[cat][sub] if p["name"] == name)
+        user_carts.setdefault(user_id, []).append(product)
+        save_data()
+        await cb.message.answer("Добавлено в корзину ✅", reply_markup=main_menu())
+        await cb.answer()
+        return
+
+    # ----------- АДМИН ДЕЙСТВИЯ -----------
+    if data.startswith("delcat_"):
+        cat = data[7:]
+        CATEGORIES.pop(cat, None)
+        save_data()
+        await cb.message.answer(f"Категория '{cat}' удалена ✅", reply_markup=admin_menu())
+        await cb.answer()
+        return
+
+    if data.startswith("addsub_"):
+        cat = data[7:]
+        if cat not in CATEGORIES:
+            CATEGORIES[cat] = {}
+        await cb.message.answer(f"Введите название новой подкатегории для '{cat}':")
+        await cb.answer()
+        return
+
+    if data.startswith("delsubcat_"):
+        cat = data[10:]
+        subs = CATEGORIES.get(cat, {})
+        if not subs:
+            await cb.message.answer("Подкатегорий нет.")
+            await cb.answer()
+            return
+        kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[[types.InlineKeyboardButton(text=sub, callback_data=f"del_sub_{cat}_{sub}")] for sub in subs]
+        )
+        await cb.message.answer("Выберите подкатегорию для удаления:", reply_markup=kb)
+        await cb.answer()
+        return
+
+    if data.startswith("del_sub_"):
+        _, cat, sub = data.split("_", 2)
+        CATEGORIES.get(cat, {}).pop(sub, None)
+        save_data()
+        await cb.message.answer(f"Подкатегория '{sub}' удалена ✅", reply_markup=admin_menu())
+        await cb.answer()
+        return
+
+# ---------------- START ----------------
+async def main():
+    load_data()
+    print("🚀 Бот запущен")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
