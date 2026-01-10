@@ -3,7 +3,7 @@ import json
 import os
 import signal
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -14,11 +14,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # ===================== CONFIG =====================
-TELEGRAM_TOKEN = "8525972479:AAGyRAVgDD8AJ5LJ9yUzCqvTPZ2nej6OBdY"
+TELEGRAM_TOKEN = "PASTE_YOUR_TOKEN_HERE"  # <-- вставь токен тут (локально)
 ADMIN_ID = 8385663990
 
 DATA_FILE = "data.json"
 LOCK_FILE = "/tmp/bot.lock"
+
+# "Оплата сейчас считается успешной сразу после нажатия кнопки"
+PAYMENT_SIMULATION = True
 
 
 # ===================== LOCK =====================
@@ -47,10 +50,16 @@ def setup_signals():
 # ===================== DATA =====================
 def default_data() -> Dict[str, Any]:
     return {
-        "categories": {},  # {cat: {sub: [product,...]}}
-        "carts": {},       # {user_id(str): [product_id(int), ...]}
-        "orders": [],      # [{id, user_id, items, total, status}]
-        "managers": []     # [user_id(int), ...]
+        # {cat: {sub: [product,...]}}
+        # product = {id:int, name:str, price:float, description:str, photos:[file_id]}
+        "categories": {},
+        # {user_id(str): [product_id(int), ...]}
+        "carts": {},
+        # [{id, user_id, items:[pid], total, status, created_at}]
+        # status: new -> paid -> completed
+        "orders": [],
+        # [user_id(int), ...]
+        "managers": []
     }
 
 
@@ -77,6 +86,11 @@ def load_data() -> Dict[str, Any]:
 def save_data(data: Dict[str, Any]) -> None:
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def ensure_data_file_exists():
+    if not os.path.exists(DATA_FILE):
+        save_data(default_data())
 
 
 def next_product_id(data: Dict[str, Any]) -> int:
@@ -111,6 +125,21 @@ def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
     return total
 
 
+def cart_lines(data: Dict[str, Any], cart: List[int]) -> List[str]:
+    lines = []
+    for pid in cart:
+        p = find_product(data, pid)
+        if p:
+            lines.append(f"• {p['name']} — {float(p['price']):.2f} ₴")
+        else:
+            lines.append(f"• (товар #{pid} видалено)")
+    return lines
+
+
+def order_items_lines(data: Dict[str, Any], order: Dict[str, Any]) -> List[str]:
+    return cart_lines(data, [int(x) for x in order.get("items", [])])
+
+
 # ===================== FSM =====================
 class AdminStates(StatesGroup):
     add_category = State()
@@ -126,10 +155,6 @@ class AdminStates(StatesGroup):
     add_product_photos = State()
 
     add_manager = State()
-
-
-class PaymentStates(StatesGroup):
-    waiting_payment_proof = State()
 
 
 # ===================== KEYBOARDS =====================
@@ -149,7 +174,18 @@ def admin_menu_kb() -> types.ReplyKeyboardMarkup:
             [types.KeyboardButton(text="➕ Додати категорію"), types.KeyboardButton(text="➕ Додати підкатегорію")],
             [types.KeyboardButton(text="➕ Додати товар"), types.KeyboardButton(text="👤 Додати менеджера")],
             [types.KeyboardButton(text="🛍 Каталог"), types.KeyboardButton(text="🧺 Кошик")],
-            [types.KeyboardButton(text="📦 Історія замовлень")]
+            [types.KeyboardButton(text="📦 Історія замовлень"), types.KeyboardButton(text="📋 Менеджер-панель")],
+        ],
+        resize_keyboard=True
+    )
+
+
+def manager_menu_kb() -> types.ReplyKeyboardMarkup:
+    return types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="📋 Нові/оплачені замовлення")],
+            [types.KeyboardButton(text="📦 Усі замовлення")],
+            [types.KeyboardButton(text="⬅️ Меню")],
         ],
         resize_keyboard=True
     )
@@ -193,9 +229,11 @@ def cart_kb(total: float) -> types.InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def pay_kb(order_id: int) -> types.InlineKeyboardMarkup:
+def order_actions_user_kb(order_id: int, show_pay: bool) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="💳 Оплатити", callback_data=f"pay:{order_id}")
+    if show_pay:
+        kb.button(text="💳 Оплатити", callback_data=f"pay:{order_id}")
+    kb.button(text="⬅️ Меню", callback_data="to_menu")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -213,15 +251,31 @@ def is_admin(user_id: int) -> bool:
 
 
 def is_manager(data: Dict[str, Any], user_id: int) -> bool:
-    return user_id in data["managers"] or is_admin(user_id)
+    return (user_id in data.get("managers", [])) or is_admin(user_id)
+
+
+async def safe_send(bot: Bot, chat_id: int, text: str, reply_markup=None):
+    try:
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception:
+        pass
 
 
 async def notify_managers(bot: Bot, data: Dict[str, Any], text: str, reply_markup=None):
-    for mid in data["managers"]:
-        try:
-            await bot.send_message(mid, text, parse_mode="HTML", reply_markup=reply_markup)
-        except Exception:
-            pass
+    for mid in data.get("managers", []):
+        await safe_send(bot, mid, text, reply_markup=reply_markup)
+
+
+def format_order_text(data: Dict[str, Any], o: Dict[str, Any]) -> str:
+    items = order_items_lines(data, o)
+    return (
+        "🧾 <b>Замовлення</b>\n\n"
+        f"🆔 <b>{o['id']}</b>\n"
+        f"👤 User ID: <code>{o['user_id']}</code>\n"
+        f"📌 Статус: <b>{o['status']}</b>\n"
+        f"💰 <b>Разом:</b> {float(o['total']):.2f} ₴\n\n"
+        + "\n".join(items)
+    )
 
 
 # ===================== BOT =====================
@@ -229,16 +283,68 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
-# ===================== COMMON =====================
+# ===================== NAV / MENU =====================
+async def send_role_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    data = load_data()
+
+    if is_admin(message.from_user.id):
+        await message.answer("🏠 Меню (адмін)", reply_markup=admin_menu_kb())
+        return
+
+    if is_manager(data, message.from_user.id):
+        await message.answer("🏠 Меню (менеджер)", reply_markup=manager_menu_kb())
+        return
+
+    await message.answer("🏠 Меню", reply_markup=main_menu_kb())
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
+    await send_role_menu(message, state)
+
+
+@dp.message(F.text.in_({"/menu", "⬅️ Меню"}))
+async def cmd_menu(message: types.Message, state: FSMContext):
+    await send_role_menu(message, state)
+
+
+@dp.callback_query(F.data == "to_menu")
+async def cb_to_menu(cb: types.CallbackQuery, state: FSMContext):
+    # callback to menu
     await state.clear()
-    if is_admin(message.from_user.id):
-        await message.answer("👋 Привіт, адмін!", reply_markup=admin_menu_kb())
+    data = load_data()
+
+    if is_admin(cb.from_user.id):
+        await cb.message.answer("🏠 Меню (адмін)", reply_markup=admin_menu_kb())
+    elif is_manager(data, cb.from_user.id):
+        await cb.message.answer("🏠 Меню (менеджер)", reply_markup=manager_menu_kb())
     else:
-        await message.answer("👋 Ласкаво просимо!", reply_markup=main_menu_kb())
+        await cb.message.answer("🏠 Меню", reply_markup=main_menu_kb())
+
+    await cb.answer()
 
 
+@dp.message(F.text == "/admin")
+async def cmd_admin_panel(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔️ Немає доступу до /admin", reply_markup=main_menu_kb())
+        return
+    await message.answer("🔧 Адмін-панель", reply_markup=admin_menu_kb())
+
+
+@dp.message(F.text.in_({"/manager", "📋 Менеджер-панель"}))
+async def cmd_manager_panel(message: types.Message, state: FSMContext):
+    await state.clear()
+    data = load_data()
+    if not is_manager(data, message.from_user.id):
+        await message.answer("⛔️ Немає доступу до /manager", reply_markup=main_menu_kb())
+        return
+    await message.answer("👔 Панель менеджера", reply_markup=manager_menu_kb())
+
+
+# ===================== COMMON =====================
 @dp.message(F.text == "📞 Підтримка")
 async def support(message: types.Message):
     await message.answer("📞 Опишіть проблему/питання — менеджер відповість.")
@@ -247,10 +353,11 @@ async def support(message: types.Message):
 @dp.message(F.text == "❌ Відмінити")
 async def cancel(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Дію скасовано ✅", reply_markup=admin_menu_kb() if is_admin(message.from_user.id) else main_menu_kb())
+    await message.answer("Дію скасовано ✅")
+    await send_role_menu(message, state)
 
 
-# ===================== USER: CATALOG (reply button) =====================
+# ===================== USER: CATALOG =====================
 @dp.message(F.text == "🛍 Каталог")
 async def user_catalog(message: types.Message):
     data = load_data()
@@ -336,12 +443,7 @@ async def open_cart(message: types.Message):
         return
 
     total = cart_total(data, cart)
-    lines = []
-    for pid in cart:
-        p = find_product(data, pid)
-        if p:
-            lines.append(f"• {p['name']} — {float(p['price']):.2f} ₴")
-
+    lines = cart_lines(data, cart)
     text = "🧺 <b>Ваш кошик</b>\n\n" + "\n".join(lines) + f"\n\n💰 <b>Разом:</b> {total:.2f} ₴"
     await message.answer(text, parse_mode="HTML", reply_markup=cart_kb(total))
 
@@ -369,15 +471,27 @@ async def checkout(cb: types.CallbackQuery):
 
     total = cart_total(data, cart)
     oid = next_order_id(data)
-    order = {"id": oid, "user_id": cb.from_user.id, "items": cart[:], "total": total, "status": "new"}
+
+    order = {
+        "id": oid,
+        "user_id": cb.from_user.id,
+        "items": cart[:],
+        "total": total,
+        "status": "new",
+        "created_at": int(asyncio.get_event_loop().time())
+    }
+
     data["orders"].append(order)
     data["carts"][uid_str] = []
     save_data(data)
 
     await cb.message.answer(
-        f"✅ <b>Замовлення створено</b>\n\n🆔 <b>{oid}</b>\n💰 <b>{total:.2f} ₴</b>\n\nНатисніть «Оплатити» і надішліть підтвердження.",
+        "✅ <b>Замовлення створено</b>\n\n"
+        f"🆔 <b>{oid}</b>\n"
+        f"💰 <b>{total:.2f} ₴</b>\n\n"
+        "Натисніть «Оплатити». (Зараз це симуляція: натиснули → вважається оплачено.)",
         parse_mode="HTML",
-        reply_markup=pay_kb(oid)
+        reply_markup=order_actions_user_kb(oid, show_pay=True)
     )
 
     user = cb.from_user
@@ -394,6 +508,52 @@ async def checkout(cb: types.CallbackQuery):
     await cb.answer()
 
 
+# ===================== PAYMENT (SIMULATION NOW) =====================
+@dp.callback_query(F.data.startswith("pay:"))
+async def pay_now(cb: types.CallbackQuery):
+    order_id = int(cb.data.split(":", 1)[1])
+    data = load_data()
+
+    order = next((o for o in data["orders"] if int(o["id"]) == order_id), None)
+    if not order or int(order["user_id"]) != cb.from_user.id:
+        await cb.answer("Замовлення не знайдено", show_alert=True)
+        return
+
+    if order["status"] != "new":
+        await cb.answer("Це замовлення вже не у статусі new", show_alert=True)
+        return
+
+    # Сейчас: оплата считается успешной сразу
+    if PAYMENT_SIMULATION:
+        order["status"] = "paid"
+        save_data(data)
+
+        await cb.message.answer(
+            "✅ <b>Оплата прийнята</b>\n\n"
+            f"🆔 Замовлення: <b>{order_id}</b>\n"
+            "Менеджер уже отримав повідомлення.",
+            parse_mode="HTML",
+            reply_markup=order_actions_user_kb(order_id, show_pay=False)
+        )
+
+        user = cb.from_user
+        mgr_text = (
+            "✅ <b>Оплата підтверджена (симуляція)</b>\n\n"
+            f"🆔 Order: <b>{order_id}</b>\n"
+            f"👤 User: @{user.username or 'без username'}\n"
+            f"🧾 ID: <code>{user.id}</code>\n"
+            f"💰 <b>{float(order['total']):.2f} ₴</b>\n"
+            "Статус: <b>paid</b>"
+        )
+        await notify_managers(cb.bot, data, mgr_text, reply_markup=done_kb(order_id))
+        await cb.answer()
+        return
+
+    # На будущее: тут будет реальная интеграция оплаты (ФОП ключ/ссылка/инвойс)
+    await cb.message.answer("💳 Оплата буде реалізована пізніше.")
+    await cb.answer()
+
+
 # ===================== HISTORY =====================
 @dp.message(F.text == "📦 Історія замовлень")
 async def order_history(message: types.Message):
@@ -404,70 +564,50 @@ async def order_history(message: types.Message):
         await message.answer("📦 У вас ще немає замовлень.")
         return
 
-    for o in orders:
+    for o in orders[-20:]:
         txt = (
             "🧾 <b>Замовлення</b>\n\n"
             f"🆔 <b>{o['id']}</b>\n"
             f"💰 <b>Разом:</b> {float(o['total']):.2f} ₴\n"
             f"📌 Статус: <b>{o['status']}</b>"
         )
-        if o["status"] == "new":
-            await message.answer(txt, parse_mode="HTML", reply_markup=pay_kb(int(o["id"])))
-        else:
-            await message.answer(txt, parse_mode="HTML")
+        show_pay = (o["status"] == "new")
+        await message.answer(txt, parse_mode="HTML", reply_markup=order_actions_user_kb(int(o["id"]), show_pay=show_pay))
 
 
-# ===================== PAYMENT =====================
-@dp.callback_query(F.data.startswith("pay:"))
-async def pay_start(cb: types.CallbackQuery, state: FSMContext):
-    order_id = int(cb.data.split(":", 1)[1])
+# ===================== MANAGER PANEL =====================
+@dp.message(F.text == "📋 Нові/оплачені замовлення")
+async def manager_new_paid_orders(message: types.Message):
     data = load_data()
-    order = next((o for o in data["orders"] if int(o["id"]) == order_id), None)
-    if not order or int(order["user_id"]) != cb.from_user.id:
-        await cb.answer("Замовлення не знайдено", show_alert=True)
-        return
-    if order["status"] != "new":
-        await cb.answer("Вже оплачено/в обробці", show_alert=True)
+    if not is_manager(data, message.from_user.id):
+        await message.answer("⛔️ Немає доступу")
         return
 
-    await state.set_state(PaymentStates.waiting_payment_proof)
-    await state.update_data(order_id=order_id)
-    await cb.message.answer("💳 Надішліть підтвердження оплати (текст або скрін) або ❌ Відмінити:", reply_markup=cancel_kb())
-    await cb.answer()
+    orders = [o for o in data["orders"] if o["status"] in ("new", "paid")]
+    if not orders:
+        await message.answer("✅ Немає нових/оплачених замовлень.")
+        return
+
+    for o in orders[-30:]:
+        await message.answer(format_order_text(data, o), parse_mode="HTML", reply_markup=done_kb(int(o["id"])))
 
 
-@dp.message(PaymentStates.waiting_payment_proof)
-async def pay_confirm(message: types.Message, state: FSMContext):
-    st = await state.get_data()
-    order_id = int(st["order_id"])
+@dp.message(F.text == "📦 Усі замовлення")
+async def manager_all_orders(message: types.Message):
     data = load_data()
-
-    order = next((o for o in data["orders"] if int(o["id"]) == order_id), None)
-    if not order:
-        await state.clear()
-        await message.answer("❌ Замовлення не знайдено.")
+    if not is_manager(data, message.from_user.id):
+        await message.answer("⛔️ Немає доступу")
         return
 
-    order["status"] = "paid"
-    save_data(data)
+    if not data["orders"]:
+        await message.answer("Замовлень поки немає.")
+        return
 
-    await message.answer("✅ Оплату прийнято! Менеджер скоро з вами звʼяжеться.", reply_markup=main_menu_kb())
-
-    user = message.from_user
-    mgr_text = (
-        "✅ <b>Оплата підтверджена</b>\n\n"
-        f"🆔 Order: <b>{order_id}</b>\n"
-        f"👤 User: @{user.username or 'без username'}\n"
-        f"🧾 ID: <code>{user.id}</code>\n"
-        f"💰 <b>{float(order['total']):.2f} ₴</b>\n"
-        "Статус: <b>paid</b>"
-    )
-    await notify_managers(message.bot, data, mgr_text, reply_markup=done_kb(order_id))
-
-    await state.clear()
+    for o in data["orders"][-30:]:
+        rm = done_kb(int(o["id"])) if o["status"] in ("new", "paid") else None
+        await message.answer(format_order_text(data, o), parse_mode="HTML", reply_markup=rm)
 
 
-# ===================== MANAGER DONE =====================
 @dp.callback_query(F.data.startswith("done:"))
 async def mark_done(cb: types.CallbackQuery):
     data = load_data()
@@ -484,11 +624,122 @@ async def mark_done(cb: types.CallbackQuery):
     order["status"] = "completed"
     save_data(data)
 
-    await cb.message.answer(f"✅ Замовлення {order_id} позначено як виконане")
+    await cb.message.answer(f"✅ Замовлення <b>{order_id}</b> позначено як виконане", parse_mode="HTML")
+    # повідомити користувача
+    await safe_send(cb.bot, int(order["user_id"]), f"✅ Ваше замовлення <b>{order_id}</b> виконано. Дякуємо!", reply_markup=None)
     await cb.answer()
 
 
-# ===================== ADMIN: ADD PRODUCT (полный сценарий) =====================
+# ===================== ADMIN: ADD CATEGORY =====================
+@dp.message(F.text == "➕ Додати категорію")
+async def add_category_start(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(AdminStates.add_category)
+    await message.answer("✍️ Введіть назву нової категорії:", reply_markup=cancel_kb())
+
+
+@dp.message(AdminStates.add_category)
+async def add_category_save(message: types.Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if len(name) < 2:
+        await message.answer("⚠️ Назва занадто коротка.")
+        return
+
+    data = load_data()
+    if name in data["categories"]:
+        await message.answer("⚠️ Така категорія вже існує.")
+        return
+
+    data["categories"][name] = {}
+    save_data(data)
+
+    await state.clear()
+    await message.answer(f"✅ Категорію «{name}» додано", reply_markup=admin_menu_kb())
+
+
+# ===================== ADMIN: ADD SUBCATEGORY =====================
+@dp.message(F.text == "➕ Додати підкатегорію")
+async def add_subcat_start(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = load_data()
+    if not data["categories"]:
+        await message.answer("⚠️ Спочатку додайте категорію.", reply_markup=admin_menu_kb())
+        return
+
+    kb = types.ReplyKeyboardMarkup(
+        keyboard=[[types.KeyboardButton(text=c)] for c in data["categories"].keys()] +
+                 [[types.KeyboardButton(text="❌ Відмінити")]],
+        resize_keyboard=True
+    )
+    await state.set_state(AdminStates.add_subcategory_category)
+    await message.answer("📂 Оберіть категорію:", reply_markup=kb)
+
+
+@dp.message(AdminStates.add_subcategory_category)
+async def add_subcat_choose_cat(message: types.Message, state: FSMContext):
+    cat = (message.text or "").strip()
+    data = load_data()
+    if cat not in data["categories"]:
+        await message.answer("⚠️ Оберіть категорію з кнопок.")
+        return
+
+    await state.update_data(category=cat)
+    await state.set_state(AdminStates.add_subcategory_name)
+    await message.answer(f"✍️ Введіть назву підкатегорії для «{cat}»:", reply_markup=cancel_kb())
+
+
+@dp.message(AdminStates.add_subcategory_name)
+async def add_subcat_save(message: types.Message, state: FSMContext):
+    sub = (message.text or "").strip()
+    if len(sub) < 2:
+        await message.answer("⚠️ Назва занадто коротка.")
+        return
+
+    st = await state.get_data()
+    cat = st["category"]
+
+    data = load_data()
+    if sub in data["categories"][cat]:
+        await message.answer("⚠️ Така підкатегорія вже існує.")
+        return
+
+    data["categories"][cat][sub] = []
+    save_data(data)
+
+    await state.clear()
+    await message.answer(f"✅ Підкатегорію «{sub}» додано до «{cat}»", reply_markup=admin_menu_kb())
+
+
+# ===================== ADMIN: ADD MANAGER =====================
+@dp.message(F.text == "👤 Додати менеджера")
+async def add_manager_start(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(AdminStates.add_manager)
+    await message.answer("Надішліть ID менеджера (число):", reply_markup=cancel_kb())
+
+
+@dp.message(AdminStates.add_manager)
+async def add_manager_save(message: types.Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    if not txt.isdigit():
+        await message.answer("⚠️ Це має бути число (ID).")
+        return
+
+    mid = int(txt)
+    data = load_data()
+    if mid not in data["managers"]:
+        data["managers"].append(mid)
+        save_data(data)
+
+    await state.clear()
+    await message.answer(f"✅ Менеджера {mid} додано", reply_markup=admin_menu_kb())
+
+
+# ===================== ADMIN: ADD PRODUCT =====================
 @dp.message(F.text == "➕ Додати товар")
 async def add_product_start(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -510,9 +761,6 @@ async def add_product_start(message: types.Message, state: FSMContext):
 
 @dp.message(AdminStates.add_product_category)
 async def add_product_choose_cat(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-
     cat = (message.text or "").strip()
     data = load_data()
     if cat not in data["categories"]:
@@ -568,6 +816,10 @@ async def add_product_price(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Невірна ціна. Введіть число.")
         return
 
+    if price <= 0:
+        await message.answer("⚠️ Ціна має бути більшою за 0.")
+        return
+
     await state.update_data(price=price)
     await state.set_state(AdminStates.add_product_description)
     await message.answer("📝 Введіть опис:", reply_markup=cancel_kb())
@@ -576,11 +828,18 @@ async def add_product_price(message: types.Message, state: FSMContext):
 @dp.message(AdminStates.add_product_description)
 async def add_product_description(message: types.Message, state: FSMContext):
     desc = (message.text or "").strip()
+    if len(desc) < 2:
+        await message.answer("⚠️ Опис занадто короткий.")
+        return
+
     await state.update_data(description=desc, photos=[])
     await state.set_state(AdminStates.add_product_photos)
 
     kb = types.ReplyKeyboardMarkup(
-        keyboard=[[types.KeyboardButton(text="✅ Готово")], [types.KeyboardButton(text="❌ Відмінити")]],
+        keyboard=[
+            [types.KeyboardButton(text="✅ Готово")],
+            [types.KeyboardButton(text="❌ Відмінити")]
+        ],
         resize_keyboard=True
     )
     await message.answer("🖼 Надішліть фото (до 10). Коли завершите — натисніть ✅ Готово", reply_markup=kb)
@@ -622,8 +881,16 @@ async def add_product_finish(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Товар «{product['name']}» додано", reply_markup=admin_menu_kb())
 
 
+# ===================== DEBUG FALLBACK (optional but useful) =====================
+# Uncomment if you want to see every text message the bot receives:
+# @dp.message()
+# async def debug_any(message: types.Message):
+#     await message.answer(f"DEBUG: {message.text!r}")
+
+
 # ===================== RUN =====================
 async def main():
+    ensure_data_file_exists()
     create_lock()
     setup_signals()
     await dp.start_polling(bot)
