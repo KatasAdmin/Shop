@@ -102,15 +102,14 @@ def admin_menu():
 # ---------------- FSM STATES ----------------
 class AdminStates(StatesGroup):
     add_category = State()
-    add_subcategory_category = State()
     add_subcategory_name = State()
-    add_product_category = State()
-    add_product_subcategory = State()
     add_product_name = State()
     add_product_price = State()
     add_product_description = State()
     add_manager = State()
-  # ---------------- HANDLERS ----------------
+    set_subcategory_for_product = State()
+
+# ---------------- MESSAGE HANDLERS ----------------
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -125,10 +124,11 @@ async def handle_message(message: types.Message, state: FSMContext):
             await message.answer("Привет! Добро пожаловать 👇", reply_markup=main_menu())
         return
 
-    # ---------------- АДМИН-ФСМ ----------------
+    # ---------------- АДМИН FSM ----------------
     if int(user_id) == ADMIN_ID:
         current_state = await state.get_state()
-        if current_state == "AdminStates:add_category":
+        # Добавление категории
+        if current_state == AdminStates.add_category.state:
             if text in CATEGORIES:
                 await message.answer("Категория уже существует.")
             else:
@@ -137,8 +137,8 @@ async def handle_message(message: types.Message, state: FSMContext):
                 await message.answer(f"Категория '{text}' добавлена ✅", reply_markup=admin_menu())
             await state.clear()
             return
-
-        elif current_state == "AdminStates:add_subcategory_name":
+        # Добавление подкатегории
+        if current_state == AdminStates.add_subcategory_name.state:
             data = await state.get_data()
             cat = data.get("category")
             if cat:
@@ -147,14 +147,13 @@ async def handle_message(message: types.Message, state: FSMContext):
                 await message.answer(f"Подкатегория '{text}' добавлена в '{cat}' ✅", reply_markup=admin_menu())
             await state.clear()
             return
-
-        elif current_state == "AdminStates:add_product_name":
+        # Добавление товара
+        if current_state == AdminStates.add_product_name.state:
             await state.update_data(product_name=text)
             await message.answer("Введите цену товара (число):")
             await state.set_state(AdminStates.add_product_price)
             return
-
-        elif current_state == "AdminStates:add_product_price":
+        if current_state == AdminStates.add_product_price.state:
             try:
                 price = float(text)
             except ValueError:
@@ -164,8 +163,7 @@ async def handle_message(message: types.Message, state: FSMContext):
             await message.answer("Введите описание товара:")
             await state.set_state(AdminStates.add_product_description)
             return
-
-        elif current_state == "AdminStates:add_product_description":
+        if current_state == AdminStates.add_product_description.state:
             data = await state.get_data()
             cat = data.get("category")
             sub = data.get("subcategory")
@@ -178,8 +176,8 @@ async def handle_message(message: types.Message, state: FSMContext):
             await message.answer(f"Товар '{name}' добавлен в '{cat} -> {sub}' ✅", reply_markup=admin_menu())
             await state.clear()
             return
-
-        elif current_state == "AdminStates:add_manager":
+        # Добавление менеджера
+        if current_state == AdminStates.add_manager.state:
             try:
                 new_id = int(text)
                 if new_id not in managers:
@@ -246,74 +244,66 @@ async def handle_message(message: types.Message, state: FSMContext):
         await message.answer("Здесь будут ваши любимые товары.", reply_markup=main_menu())
         return
 
-# ---------------- CALLBACKS ----------------
+# ---------------- CALLBACK HANDLERS ----------------
 @dp.callback_query()
 async def handle_callbacks(cb: types.CallbackQuery, state: FSMContext):
-    data_cb = cb.data
     user_id = str(cb.from_user.id)
+    data_cb = cb.data
     load_data()
 
-    # ---------------- Удалить категорию ----------------
-    if data_cb.startswith("delcat_"):
-        cat = data_cb[7:]
-        if cat in CATEGORIES:
-            del CATEGORIES[cat]
-            save_data()
-            await cb.message.answer(f"Категория '{cat}' удалена ✅", reply_markup=admin_menu())
-        await cb.answer()
-        return
-
-    # ---------------- Добавить подкатегорию ----------------
-    if data_cb.startswith("addsub_"):
-        cat = data_cb[7:]
-        await state.update_data(category=cat)
-        await cb.message.answer(f"Введите название подкатегории для '{cat}':")
-        await state.set_state(AdminStates.add_subcategory_name)
-        await cb.answer()
-        return
-
-    # ---------------- Удалить подкатегорию ----------------
-    if data_cb.startswith("delsubcat_"):
-        cat = data_cb[10:]
-        subs = CATEGORIES.get(cat, {})
-        if not subs:
-            await cb.message.answer("В данной категории нет подкатегорий.")
+    # ---- АДМИН CALLBACKS ----
+    if int(user_id) == ADMIN_ID:
+        if data_cb.startswith("delcat_"):
+            cat = data_cb[7:]
+            if cat in CATEGORIES:
+                del CATEGORIES[cat]
+                save_data()
+                await cb.message.answer(f"Категория '{cat}' удалена ✅", reply_markup=admin_menu())
             await cb.answer()
             return
-        kb = types.InlineKeyboardMarkup(
-            inline_keyboard=[[types.InlineKeyboardButton(text=sub, callback_data=f"delsub_{cat}_{sub}")] for sub in subs]
-        )
-        await cb.message.answer("Выберите подкатегорию для удаления:", reply_markup=kb)
-        await cb.answer()
-        return
 
-    if data_cb.startswith("delsub_"):
-        _, cat, sub = data_cb.split("_", 2)
-        if sub in CATEGORIES.get(cat, {}):
-            del CATEGORIES[cat][sub]
-            save_data()
-            await cb.message.answer(f"Подкатегория '{sub}' удалена из '{cat}' ✅", reply_markup=admin_menu())
-        await cb.answer()
-        return
+        if data_cb.startswith("addsub_"):
+            cat = data_cb[7:]
+            await state.update_data(category=cat)
+            await cb.message.answer(f"Введите название подкатегории для '{cat}':")
+            await state.set_state(AdminStates.add_subcategory_name)
+            await cb.answer()
+            return
 
-    # ---------------- Добавить товар ----------------
-    if data_cb.startswith("addprod_"):
-        _, cat, sub = data_cb.split("_", 2)
-        await state.update_data(category=cat, subcategory=sub)
-        await cb.message.answer("Введите название товара:")
-        await state.set_state(AdminStates.add_product_name)
-        await cb.answer()
-        return
-       # ---------------- CALLBACKS ДЛЯ ПОЛЬЗОВАТЕЛЯ ----------------
-@dp.callback_query()
-async def catalog_callbacks(cb: types.CallbackQuery):
-    user_id = str(cb.from_user.id)
-    data = cb.data
-    load_data()
+        if data_cb.startswith("delsubcat_"):
+            cat = data_cb[10:]
+            subs = CATEGORIES.get(cat, {})
+            if not subs:
+                await cb.message.answer("В данной категории нет подкатегорий.")
+                await cb.answer()
+                return
+            kb = types.InlineKeyboardMarkup(
+                inline_keyboard=[[types.InlineKeyboardButton(text=sub, callback_data=f"delsub_{cat}_{sub}")] for sub in subs]
+            )
+            await cb.message.answer("Выберите подкатегорию для удаления:", reply_markup=kb)
+            await cb.answer()
+            return
 
-    # ---------------- Выбор категории ----------------
-    if data.startswith("cat_"):
-        cat = data[4:]
+        if data_cb.startswith("delsub_"):
+            _, cat, sub = data_cb.split("_", 2)
+            if sub in CATEGORIES.get(cat, {}):
+                del CATEGORIES[cat][sub]
+                save_data()
+                await cb.message.answer(f"Подкатегория '{sub}' удалена из '{cat}' ✅", reply_markup=admin_menu())
+            await cb.answer()
+            return
+
+        if data_cb.startswith("addprod_"):
+            _, cat, sub = data_cb.split("_", 2)
+            await state.update_data(category=cat, subcategory=sub)
+            await cb.message.answer("Введите название товара:")
+            await state.set_state(AdminStates.add_product_name)
+            await cb.answer()
+            return
+
+    # ---- ПОЛЬЗОВАТЕЛЬ CALLBACKS ----
+    if data_cb.startswith("cat_"):
+        cat = data_cb[4:]
         subs = CATEGORIES.get(cat, {})
         if not subs:
             await cb.message.answer("В этой категории нет подкатегорий.", reply_markup=main_menu())
@@ -327,9 +317,8 @@ async def catalog_callbacks(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # ---------------- Выбор подкатегории ----------------
-    if data.startswith("sub_"):
-        _, cat, sub = data.split("_", 2)
+    if data_cb.startswith("sub_"):
+        _, cat, sub = data_cb.split("_", 2)
         products = CATEGORIES.get(cat, {}).get(sub, [])
         if not products:
             await cb.message.answer("В подкатегории пока нет товаров.", reply_markup=main_menu())
@@ -346,9 +335,8 @@ async def catalog_callbacks(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # ---------------- Добавление в корзину ----------------
-    if data.startswith("buy_"):
-        _, cat, sub, name = data.split("_", 3)
+    if data_cb.startswith("buy_"):
+        _, cat, sub, name = data_cb.split("_", 3)
         product = next((p for p in CATEGORIES[cat][sub] if p["name"] == name), None)
         if product:
             user_carts.setdefault(user_id, []).append(product)
@@ -357,22 +345,10 @@ async def catalog_callbacks(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # ---------------- Назад в главное меню ----------------
-    if data == "back_main":
+    if data_cb == "back_main":
         await cb.message.answer("Главное меню:", reply_markup=main_menu())
         await cb.answer()
         return
-
-# ---------------- FSM STATES ----------------
-from aiogram.fsm.state import State, StatesGroup
-
-class AdminStates(StatesGroup):
-    add_category = State()
-    add_subcategory_name = State()
-    add_product_name = State()
-    add_product_price = State()
-    add_product_description = State()
-    add_manager = State()
 
 # ---------------- START BOT ----------------
 async def main():
