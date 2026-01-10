@@ -10,7 +10,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ------------------- Токен бота та адміністратор -------------------
-TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН"
+TELEGRAM_TOKEN = "8525972479:AAGyRAVgDD8AJ5LJ9yUzCqvTPZ2nej6OBdY"
 ADMIN_ID = 8385663990  # твій ID
 
 # ------------------- LOCK -------------------
