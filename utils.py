@@ -1,4 +1,6 @@
-from typing import Dict, Any, List, Optional
+# utils.py
+
+from typing import Dict, Any, List
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
@@ -15,6 +17,11 @@ def is_admin(uid: int) -> bool:
 
 def is_manager(data: Dict[str, Any], uid: int) -> bool:
     return uid in data.get("managers", []) or is_admin(uid)
+
+
+def is_staff(data: Dict[str, Any], uid: int) -> bool:
+    """Админ или менеджер"""
+    return is_manager(data, uid)
 
 
 # ===================== SAFE SEND =====================
@@ -37,7 +44,6 @@ async def safe_send_media_group(bot: Bot, chat_id: int, media: List[InputMediaPh
     try:
         await bot.send_media_group(chat_id, media)
     except Exception:
-        # если альбом не отправился — не падаем
         pass
 
 
@@ -50,14 +56,9 @@ def get_recipients() -> List[int]:
     return list(recipients)
 
 
-async def notify_managers_text(bot: Bot, text: str):
-    for uid in get_recipients():
-        await safe_send(bot, uid, text)
-
-
 async def notify_managers_order(bot: Bot, data: Dict[str, Any], order: Dict[str, Any]):
     """
-    Отправляет менеджерам:
+    Отправляет менеджерам/админу:
     1) полный текст заказа
     2) фото товаров (первые фото каждого товара, если есть)
     """
@@ -67,7 +68,6 @@ async def notify_managers_order(bot: Bot, data: Dict[str, Any], order: Dict[str,
     for uid in recipients:
         await safe_send(bot, uid, text)
 
-        # Фото товаров: сначала пробуем альбомом (если несколько)
         photos: List[InputMediaPhoto] = []
         for pid in order.get("items", []):
             p = find_product(data, pid)
@@ -77,9 +77,8 @@ async def notify_managers_order(bot: Bot, data: Dict[str, Any], order: Dict[str,
             if imgs:
                 photos.append(InputMediaPhoto(media=imgs[0], caption=p.get("name", "")))
 
-        # если есть 2+ — шлем альбомом, если 1 — просто фото
         if len(photos) >= 2:
-            await safe_send_media_group(bot, uid, photos[:10])  # Telegram лимит 10 в альбоме
+            await safe_send_media_group(bot, uid, photos[:10])
         elif len(photos) == 1:
             await safe_send_photo(bot, uid, photos[0].media, caption=photos[0].caption)
 
