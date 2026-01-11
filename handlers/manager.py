@@ -1,3 +1,5 @@
+# handlers/manager.py
+
 from aiogram import Router, types
 from aiogram.filters import Command
 
@@ -6,11 +8,16 @@ from utils import is_manager
 
 router = Router()
 
-def manager_menu():
+
+def manager_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
-        keyboard=[["📋 Нові замовлення"], ["📦 Усі замовлення"]],
+        keyboard=[
+            [types.KeyboardButton(text="📋 Нові замовлення")],
+            [types.KeyboardButton(text="📦 Усі замовлення")],
+        ],
         resize_keyboard=True
     )
+
 
 @router.message(Command("manager"))
 async def manager_cmd(m: types.Message):
