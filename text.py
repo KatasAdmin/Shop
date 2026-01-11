@@ -1,23 +1,24 @@
 # text.py
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List
 
-
-# ---------- base helpers ----------
 
 def b(s: str) -> str:
     return f"<b>{s}</b>"
 
+
 def i(s: str) -> str:
     return f"<i>{s}</i>"
+
 
 def s_(s: str) -> str:
     return f"<s>{s}</s>"
 
+
 def code(s: str) -> str:
     return f"<code>{s}</code>"
+
 
 def esc(text: str) -> str:
     return (
@@ -27,106 +28,35 @@ def esc(text: str) -> str:
         .replace(">", "&gt;")
     )
 
-def spacer() -> str:
-    return "━━━━━━━━━━━━━━━━━━━━"
-
-
-# ---------- time / promo ----------
-
-def _now_ts() -> int:
-    return int(datetime.now(tz=timezone.utc).timestamp())
-
-def is_promo_active(p: Dict[str, Any], now_ts: Optional[int] = None) -> bool:
-    """
-    Promo logic:
-    - promo_price > 0
-    - promo_until_ts is None OR now <= promo_until_ts
-    """
-    now = now_ts if now_ts is not None else _now_ts()
-
-    promo_price = float(p.get("promo_price") or 0)
-    if promo_price <= 0:
-        return False
-
-    until = p.get("promo_until_ts")
-    if until is None:
-        return True
-
-    try:
-        until = int(until)
-    except Exception:
-        return True
-
-    return now <= until
-
-
-# ---------- prices ----------
 
 def money_uah(x: Any) -> str:
     try:
         v = float(x)
     except Exception:
         v = 0.0
-
     if v.is_integer():
         return f"{int(v)} ₴"
     return f"{v:.2f} ₴"
 
-def price_line(p: Dict[str, Any]) -> str:
+
+def product_price_for_order(p: Dict[str, Any]) -> float:
     """
-    Якщо є акція:  💰 ~~2499 ₴~~  <b>1999 ₴</b>  🔥 <b>-20%</b>
-    Інакше:         💰 <b>2499 ₴</b>
+    Поки без промо-логіки: беремо p["price"].
+    Коли додамо акції — тут буде вибір promo/base.
     """
-    base = p.get("base_price", p.get("price", 0))
-    base_v = float(base or 0)
-
-    if is_promo_active(p):
-        promo_v = float(p.get("promo_price") or 0)
-        perc = ""
-        if base_v > 0 and promo_v > 0 and promo_v < base_v:
-            off = int(round((1 - promo_v / base_v) * 100))
-            if off > 0:
-                perc = f"  🔥 {b(f'-{off}%')}"
-        return f"💰 {s_(money_uah(base_v))}  {b(money_uah(promo_v))}{perc}"
-
-    return f"💰 {b(money_uah(base_v))}"
+    try:
+        return float(p.get("price", 0) or 0)
+    except Exception:
+        return 0.0
 
 
-# ---------- product / cart / order formatting ----------
-
-def product_card(p: Dict[str, Any]) -> str:
-    name = esc(str(p.get("name", "Товар")))
-    pid = p.get("id", "")
-    desc = esc(str(p.get("description", "")).strip())
-
-    lines: List[str] = []
-    lines.append(f"✨ {b(name)}")
-    lines.append(code(f"ID: {pid}"))
-    lines.append("")
-    lines.append(price_line(p))
-
-    if desc:
-        lines.append("")
-        lines.append(f"📝 {b('Опис')}")
-        lines.append(i(desc))
-
-    lines.append("")
-    lines.append(spacer())
-    return "\n".join(lines)
-
-def product_short(p: Dict[str, Any]) -> str:
-    name = esc(str(p.get("name", "Товар")))
-    pid = p.get("id", "")
-    base = p.get("base_price", p.get("price", 0))
-
-    if is_promo_active(p):
-        promo = float(p.get("promo_price") or 0)
-        return f"• {b(name)} ({code(f'#{pid}')}) — {s_(money_uah(base))} → {b(money_uah(promo))}"
-
-    return f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
-
-def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: List[Dict[str, Any]]) -> str:
+def order_premium_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
+    """
+    Преміум-текст замовлення для менеджера/адміна.
+    Викликається з utils.format_order_text(...)
+    """
     oid = order.get("id", "")
+    uid = order.get("user_id", "")
     status = str(order.get("status", "new"))
 
     status_map = {
@@ -137,6 +67,27 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     }
     st = status_map.get(status, status)
 
+    # товари
+    lines: List[str] = []
+    total = 0.0
+
+    from data import find_product  # щоб не було циклічного імпорту на старті
+
+    for pid in order.get("items", []):
+        p = find_product(data, pid)
+        if not p:
+            lines.append(f"• {b('Товар')} {code('#' + str(pid))} — {i('не знайдено')}")
+            continue
+
+        name = esc(str(p.get("name", "Товар")))
+        price = product_price_for_order(p)
+        total += price
+        lines.append(f"• {b(name)} ({code('#' + str(pid))}) — {b(money_uah(price))}")
+
+    if not lines:
+        lines.append(i("— порожньо —"))
+
+    # доставка
     delivery = order.get("delivery", {}) or {}
     cname = esc(str(delivery.get("name", "")))
     phone = esc(str(delivery.get("phone", "")))
@@ -144,35 +95,35 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     np_branch = esc(str(delivery.get("np_branch", "")))
     comment = esc(str(delivery.get("comment", "")))
 
-    now = _now_ts()
-    total = 0.0
-    for p in products:
-        if is_promo_active(p, now_ts=now):
-            total += float(p.get("promo_price") or 0)
-        else:
-            total += float(p.get("base_price", p.get("price", 0)) or 0)
+    delivery_lines: List[str] = []
+    if cname:
+        delivery_lines.append(f"• {b('Імʼя')}: {cname}")
+    if phone:
+        delivery_lines.append(f"• {b('Телефон')}: {phone}")
+    if city:
+        delivery_lines.append(f"• {b('Місто')}: {city}")
+    if np_branch:
+        delivery_lines.append(f"• {b('НП')}: {np_branch}")
+    if comment:
+        delivery_lines.append(f"• {b('Коментар')}: {i(comment)}")
 
-    lines: List[str] = []
-    lines.append(f"📦 {b('Замовлення')} {code(f'#{oid}')}")
-    lines.append(f"{b('Статус')}: {b(st)}")
-    lines.append(f"{b('User ID')}: {code(str(order.get('user_id', '')))}")
-    lines.append("")
-    lines.append(spacer())
+    if not delivery_lines:
+        delivery_lines = [i("—")]
 
-    lines.append(f"🛍 {b('Товари')}")
-    for p in products:
-        lines.append(product_short(p))
+    sep = "━━━━━━━━━━━━━━━━━━━━"
 
-    lines.append("")
-    lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
-    lines.append(spacer())
-    lines.append("")
-
-    lines.append(f"🚚 {b('Доставка')}")
-    if cname: lines.append(f"👤 {b('Імʼя')}: {cname}")
-    if phone: lines.append(f"📞 {b('Телефон')}: {phone}")
-    if city: lines.append(f"🏙 {b('Місто')}: {city}")
-    if np_branch: lines.append(f"📦 {b('НП')}: {np_branch}")
-    if comment: lines.append(f"📝 {b('Коментар')}: {i(comment)}")
-
-    return "\n".join(lines)
+    return "\n".join([
+        f"📦 {b('Замовлення')} {code('#' + str(oid))}",
+        f"👤 {b('User ID')}: {code(str(uid))}",
+        f"📌 {b('Статус')}: {b(st)}",
+        "",
+        f"🛒 {b('Склад')}:",
+        *lines,
+        "",
+        sep,
+        f"💳 {b('Разом')}: {b(money_uah(total))}",
+        sep,
+        "",
+        f"🚚 {b('Доставка')}:",
+        *delivery_lines,
+    ])
