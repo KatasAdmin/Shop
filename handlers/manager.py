@@ -11,7 +11,7 @@ router = Router()
 def manager_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="📋 Нові замовлення")],
+            [types.KeyboardButton(text="📋 Нові (оплачені)")],
             [types.KeyboardButton(text="📦 Усі замовлення")],
         ],
         resize_keyboard=True
@@ -31,15 +31,15 @@ async def manager_cmd(m: types.Message):
     await m.answer("👔 Менеджер", reply_markup=manager_menu())
 
 
-@router.message(F.text == "📋 Нові замовлення")
+@router.message(F.text == "📋 Нові (оплачені)")
 async def new_orders(m: types.Message):
     d = load_data()
     if not is_manager(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
 
-    orders = [o for o in d["orders"] if o.get("status") == "new"]
+    orders = [o for o in d["orders"] if o.get("status") == "paid"]
     if not orders:
-        return await m.answer("Немає нових замовлень.")
+        return await m.answer("Немає нових оплачених замовлень.")
 
     for o in orders:
         await m.answer(
