@@ -16,3 +16,9 @@ class EditProductFSM(StatesGroup):
     name = State()
     price = State()
     desc = State()
+
+class OrderFSM(StatesGroup):
+    name = State()
+    phone = State()
+    address = State()
+    comment = State()
