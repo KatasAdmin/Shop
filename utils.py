@@ -6,6 +6,9 @@ from aiogram import Bot
 from config import ADMIN_ID
 from data import load_data, find_product
 
+# преміум форматування (файл text.py лежить у корені)
+from text import order_premium_text
+
 
 # ===================== ROLES =====================
 
@@ -48,50 +51,15 @@ async def notify_staff(bot: Bot, text: str):
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     """
-    Гарний текст замовлення для менеджера/адміна
-    (з товарами + доставкою)
+    Преміум-текст замовлення для менеджера/адміна.
+    Повертає HTML-рядок -> при відправці став parse_mode="HTML"
     """
-    lines: List[str] = []
-
+    items: List[Dict[str, Any]] = []
     for pid in order.get("items", []):
-        product = find_product(data, pid)
-        if product:
-            lines.append(f"• {product['name']} — {product['price']} ₴")
-        else:
-            lines.append(f"• Товар #{pid} (не знайдено)")
+        p = find_product(data, pid)
+        if p:
+            items.append(p)
 
-    status = order.get("status", "new")
-    total = float(order.get("total", 0))
-
-    delivery = order.get("delivery", {}) or {}
-    cname = delivery.get("name", "")
-    phone = delivery.get("phone", "")
-    city = delivery.get("city", "")
-    np_branch = delivery.get("np_branch", "")
-    comment = delivery.get("comment", "")
-
-    delivery_block = []
-    if cname:
-        delivery_block.append(f"👤 Імʼя: {cname}")
-    if phone:
-        delivery_block.append(f"📞 Телефон: {phone}")
-    if city:
-        delivery_block.append(f"🏙 Місто: {city}")
-    if np_branch:
-        delivery_block.append(f"📦 НП: {np_branch}")
-    if comment:
-        delivery_block.append(f"📝 Коментар: {comment}")
-
-    if not delivery_block:
-        delivery_text = "—"
-    else:
-        delivery_text = "\n".join(delivery_block)
-
-    return (
-        f"🧾 Замовлення #{order.get('id')}\n"
-        f"👤 User ID: {order.get('user_id')}\n"
-        f"📌 Статус: {status}\n\n"
-        f"🛒 Склад:\n" + "\n".join(lines) +
-        f"\n\n💰 Разом: {total:.2f} ₴\n\n"
-        f"🚚 Доставка:\n{delivery_text}"
-    )
+    # order_premium_text(order, items) — якщо твоя функція саме така.
+    # Якщо в text.py вона називається order_card(...) — скажи, підлаштую.
+    return order_premium_text(order, items)
