@@ -8,12 +8,9 @@ from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
 
-# PREMIUM TEXT
-from text import product_card, cart_summary
-
 router = Router()
 
-NO_SUB = "_"  # системна підкатегорія (твоя кнопка "(🔥Хіти/Акції)")
+NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "Уцінка")
 
 
 # -------------------- USER MENU --------------------
@@ -42,8 +39,8 @@ def catalog_kb(cats):
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # кнопка "NO_SUB" (ти її назвав "(🔥Хіти/Акції)")
-    kb.button(text="(🔥Хіти/Акції)", callback_data=f"sub:{cat}:{NO_SUB}")
+    # кнопка "Уцінка" (це твій NO_SUB)
+    kb.button(text="(Уцінка)", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
         if s == NO_SUB:
@@ -93,8 +90,7 @@ def is_fav(d, uid: int, pid: int) -> bool:
 
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
-    # PREMIUM PRODUCT CARD
-    txt = product_card(p)
+    txt = f"<b>{p['name']}</b>\n💰 {p['price']} ₴\n\n{p.get('description', '')}"
     kb = product_kb(p["id"], fav=is_fav(d, uid, p["id"]))
 
     photos = p.get("photos", [])
@@ -247,17 +243,15 @@ async def show_cart(m: types.Message):
     if not cart:
         return await m.answer("Кошик порожній")
 
-    items = []
-    for pid in cart:
-        p = find_product(d, int(pid))
-        if p:
-            items.append(p)
-
     total = cart_total(d, cart)
+    lines = []
+    for pid in cart:
+        p = find_product(d, pid)
+        if p:
+            lines.append(f"• {p['name']} — {p['price']} ₴")
 
     await m.answer(
-        cart_summary(items),
-        parse_mode="HTML",
+        "🧺 Кошик:\n" + "\n".join(lines) + f"\n\nРазом: {total:.2f} ₴",
         reply_markup=cart_kb(total)
     )
 
@@ -393,10 +387,8 @@ async def pay(cb: types.CallbackQuery):
 
     order["status"] = "paid"
 
-    # чистимо кошик ТІЛЬКИ після оплати
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
-
     save_data(d)
 
     await cb.message.answer(
@@ -431,8 +423,8 @@ async def history(m: types.Message):
 async def support(m: types.Message):
     await m.answer(
         "🆘 Підтримка\n\n"
-        "Якщо є питання — напишіть сюди:\n"
-        "• Telegram: @katas_support\n"
-        "• Або просто відповідайте на це повідомлення — ми зробимо пересилку менеджеру.",
+        "Напишіть нам:\n"
+        "• Telegram: @YOUR_SUPPORT_USERNAME\n"
+        "• Або просто відповідайте на це повідомлення — ми передамо менеджеру.",
         reply_markup=main_menu()
     )
