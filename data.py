@@ -15,8 +15,8 @@ def default_data() -> Dict[str, Any]:
         "carts": {},
         "orders": [],
         "managers": [],
-        "favorites": {},
-        "hits": []
+        "favorites": {},  # ⭐ обране
+        "hits": []        # 🔥 хіти/акції
     }
 
 
@@ -51,11 +51,14 @@ def ensure_data_dir():
 
 
 def _migrate(d: Dict[str, Any]) -> Dict[str, Any]:
+    # додаємо відсутні ключі
     for k, v in default_data().items():
         d.setdefault(k, v)
 
+    # якщо колись було history — прибираємо
     if "history" in d:
         del d["history"]
+
     return d
 
 
@@ -74,7 +77,7 @@ def save_data(data: Dict[str, Any]) -> None:
 def load_data() -> Dict[str, Any]:
     ensure_data_dir()
 
-    # 1) Спочатку пробуємо підтягнути з GitHub (якщо налаштовано)
+    # 1) Пробуємо підтягнути з GitHub (якщо налаштовано)
     gh = pull_data_if_possible()
     if isinstance(gh, dict):
         gh = _migrate(gh)
@@ -83,7 +86,7 @@ def load_data() -> Dict[str, Any]:
                 json.dump(gh, f, ensure_ascii=False, indent=2)
         return gh
 
-    # 2) Якщо GitHub недоступний — працюємо локально
+    # 2) Якщо GitHub не доступний — працюємо локально
     with file_lock(LOCK_FILE):
         if not os.path.exists(DATA_FILE):
             d = default_data()
@@ -100,8 +103,7 @@ def load_data() -> Dict[str, Any]:
                 json.dump(d, f, ensure_ascii=False, indent=2)
             return d
 
-        d = _migrate(d)
-        return d
+        return _migrate(d)
 
 
 def next_product_id(data: Dict[str, Any]) -> int:
