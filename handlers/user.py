@@ -40,7 +40,7 @@ def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
     # кнопка "Без підкатегорії"
-    kb.button(text="(Без підкатегорії)", callback_data=f"sub:{cat}:{NO_SUB}")
+    kb.button(text="(🔥Хіти/Акції)", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
         if s == NO_SUB:
