@@ -563,7 +563,7 @@ async def prod_done(m: types.Message, state: FSMContext):
 
     await state.clear()
     await m.answer(f"✅ Товар додано: {product['name']} (ID: {pid})", reply_markup=staff_menu(m.from_user.id))
-    # -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
+# -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
 
 @router.message(F.text == "🛠 Товари")
 async def products_btn(m: types.Message):
