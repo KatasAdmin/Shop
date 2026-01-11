@@ -1,3 +1,5 @@
+# handlers/admin.py
+
 from aiogram import Router, types
 from aiogram.filters import Command
 
@@ -5,15 +7,25 @@ from utils import is_admin
 
 router = Router()
 
-def admin_menu():
+
+def admin_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
         keyboard=[
-            ["➕ Додати категорію", "➕ Додати підкатегорію"],
-            ["➕ Додати товар", "🛠 Товари"],
-            ["👤 Додати менеджера"]
+            [
+                types.KeyboardButton(text="➕ Додати категорію"),
+                types.KeyboardButton(text="➕ Додати підкатегорію"),
+            ],
+            [
+                types.KeyboardButton(text="➕ Додати товар"),
+                types.KeyboardButton(text="🛠 Товари"),
+            ],
+            [
+                types.KeyboardButton(text="👤 Додати менеджера"),
+            ],
         ],
         resize_keyboard=True
     )
+
 
 @router.message(Command("admin"))
 async def admin_cmd(m: types.Message):
