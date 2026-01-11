@@ -1,16 +1,12 @@
 # config.py
-
 import os
+from dotenv import load_dotenv
 
-# ❗ ОБЯЗАТЕЛЬНО: вставляй НОВЫЙ токен после revoke
-BOT_TOKEN = "8525972479:AAGyRAVgDD8AJ5LJ9yUzCqvTPZ2nej6OBdY"
+load_dotenv()
 
-# Твой Telegram ID
-ADMIN_ID = 8385663990
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+PAYMENT_SIMULATION = os.getenv("PAYMENT_SIMULATION", "true").lower() == "true"
 
-# Файлы
 DATA_FILE = "data.json"
 LOCK_FILE = "/tmp/bot.lock"
-
-# Пока без реальной оплаты
-PAYMENT_SIMULATION = True
