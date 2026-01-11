@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional
 from contextlib import contextmanager
 
 from config import DATA_FILE, LOCK_FILE
-from sync_github import pull_data_if_possible, push_data_throttled
+from sync_github import push_data_throttled
 
 
 def default_data() -> Dict[str, Any]:
@@ -16,7 +16,7 @@ def default_data() -> Dict[str, Any]:
         "orders": [],
         "managers": [],
         "favorites": {},  # ⭐ обране
-        "hits": []        # 🔥 хіти/акції
+        "hits": [],       # 🔥 хіти/акції
     }
 
 
@@ -51,14 +51,10 @@ def ensure_data_dir():
 
 
 def _migrate(d: Dict[str, Any]) -> Dict[str, Any]:
-    # додаємо відсутні ключі
     for k, v in default_data().items():
         d.setdefault(k, v)
-
-    # якщо колись було history — прибираємо
     if "history" in d:
         del d["history"]
-
     return d
 
 
@@ -77,16 +73,6 @@ def save_data(data: Dict[str, Any]) -> None:
 def load_data() -> Dict[str, Any]:
     ensure_data_dir()
 
-    # 1) Пробуємо підтягнути з GitHub (якщо налаштовано)
-    gh = pull_data_if_possible()
-    if isinstance(gh, dict):
-        gh = _migrate(gh)
-        with file_lock(LOCK_FILE):
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(gh, f, ensure_ascii=False, indent=2)
-        return gh
-
-    # 2) Якщо GitHub не доступний — працюємо локально
     with file_lock(LOCK_FILE):
         if not os.path.exists(DATA_FILE):
             d = default_data()
@@ -131,5 +117,5 @@ def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
     for pid in cart:
         p = find_product(data, pid)
         if p:
-            total += float(p["price"])
+            total += float(p.get("price", 0))
     return total
