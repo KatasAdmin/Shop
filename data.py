@@ -16,7 +16,7 @@ def default_data() -> Dict[str, Any]:
         "orders": [],
         "managers": [],
         "favorites": {},  # ⭐ обране
-        "hits": [],       # 🔥 хіти/акції
+        "hits": []        # 🔥 хіти/акції
     }
 
 
@@ -66,11 +66,15 @@ def save_data(data: Dict[str, Any]) -> None:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # Після локального сейву — пушимо в GitHub (якщо налаштовано)
+    # ✅ Пушимо в GitHub (якщо налаштовано), але з throttling
     push_data_throttled(data)
 
 
 def load_data() -> Dict[str, Any]:
+    """
+    ✅ ТІЛЬКИ локальне читання.
+    GitHub pull робимо один раз на старті у main.py
+    """
     ensure_data_dir()
 
     with file_lock(LOCK_FILE):
@@ -117,5 +121,5 @@ def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
     for pid in cart:
         p = find_product(data, pid)
         if p:
-            total += float(p.get("price", 0))
+            total += float(p["price"])
     return total
