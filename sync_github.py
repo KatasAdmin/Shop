@@ -1,8 +1,9 @@
 # sync_github.py
+import asyncio
 import base64
 import json
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Callable
 
 import requests
 
@@ -16,6 +17,7 @@ from config import (
 
 _cached_sha: Optional[str] = None
 _last_push_ts: float = 0.0
+_task: Optional[asyncio.Task] = None
 
 
 def _enabled() -> bool:
@@ -89,6 +91,9 @@ def github_put_file(path: str, data: Dict[str, Any], sha: Optional[str]) -> bool
 
 
 def pull_data_if_possible() -> Optional[Dict[str, Any]]:
+    """
+    Підтягує data.json з GitHub (якщо є і налаштовано).
+    """
     global _cached_sha
     got = github_get_file(GITHUB_DATA_PATH)
     if not got:
@@ -113,3 +118,22 @@ def push_data_throttled(data: Dict[str, Any]) -> None:
     ok = github_put_file(GITHUB_DATA_PATH, data, _cached_sha)
     if ok:
         _last_push_ts = now
+
+
+async def _periodic_loop(get_data: Callable[[], Dict[str, Any]]):
+    while True:
+        try:
+            data = get_data()
+            push_data_throttled(data)
+        except Exception as e:
+            print("periodic github sync error:", e)
+        await asyncio.sleep(3)  # частота перевірки, пуш лімітується GITHUB_SYNC_INTERVAL
+
+
+def start_periodic_sync(get_data: Callable[[], Dict[str, Any]]) -> None:
+    global _task
+    if not _enabled():
+        return
+    if _task and not _task.done():
+        return
+    _task = asyncio.create_task(_periodic_loop(get_data))
