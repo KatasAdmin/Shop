@@ -4,12 +4,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN
 from handlers import user_router, admin_router, manager_router
-from utils import create_lock, setup_signals
 
 async def main():
-    create_lock()
-    setup_signals()
-
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
