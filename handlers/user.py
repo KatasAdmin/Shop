@@ -1,3 +1,5 @@
+# handlers/user.py
+
 from aiogram import Router, F, types
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -6,11 +8,21 @@ from data import load_data, save_data, find_product, cart_total, next_order_id
 
 router = Router()
 
-def main_menu():
+
+def main_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
-        keyboard=[["🛍 Каталог", "🧺 Кошик"], ["📦 Історія замовлень"]],
+        keyboard=[
+            [
+                types.KeyboardButton(text="🛍 Каталог"),
+                types.KeyboardButton(text="🧺 Кошик"),
+            ],
+            [
+                types.KeyboardButton(text="📦 Історія замовлень"),
+            ],
+        ],
         resize_keyboard=True
     )
+
 
 def catalog_kb(cats):
     kb = InlineKeyboardBuilder()
@@ -19,6 +31,7 @@ def catalog_kb(cats):
     kb.adjust(2)
     return kb.as_markup()
 
+
 def subcat_kb(cat, subs):
     kb = InlineKeyboardBuilder()
     for s in subs:
@@ -26,10 +39,12 @@ def subcat_kb(cat, subs):
     kb.adjust(2)
     return kb.as_markup()
 
+
 def add_cart_kb(pid: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
     return kb.as_markup()
+
 
 def cart_kb(total: float):
     kb = InlineKeyboardBuilder()
@@ -37,14 +52,17 @@ def cart_kb(total: float):
     kb.button(text="🗑 Очистити", callback_data="clear")
     return kb.as_markup()
 
+
 def pay_kb(oid: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Оплатити", callback_data=f"pay:{oid}")
     return kb.as_markup()
 
+
 @router.message(CommandStart())
 async def start(m: types.Message):
     await m.answer("🏠 Меню", reply_markup=main_menu())
+
 
 @router.message(F.text == "🛍 Каталог")
 async def catalog(m: types.Message):
@@ -52,6 +70,7 @@ async def catalog(m: types.Message):
     if not d["categories"]:
         return await m.answer("Каталог порожній")
     await m.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
+
 
 @router.callback_query(F.data.startswith("cat:"))
 async def choose_cat(cb: types.CallbackQuery):
@@ -63,6 +82,7 @@ async def choose_cat(cb: types.CallbackQuery):
         reply_markup=subcat_kb(cat, d["categories"][cat].keys())
     )
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("sub:"))
 async def choose_sub(cb: types.CallbackQuery):
@@ -82,6 +102,7 @@ async def choose_sub(cb: types.CallbackQuery):
             await cb.message.answer(text, parse_mode="HTML", reply_markup=add_cart_kb(p["id"]))
     await cb.answer()
 
+
 @router.callback_query(F.data.startswith("add:"))
 async def add_cart(cb: types.CallbackQuery):
     d = load_data()
@@ -89,6 +110,7 @@ async def add_cart(cb: types.CallbackQuery):
     d["carts"].setdefault(uid, []).append(int(cb.data.split(":")[1]))
     save_data(d)
     await cb.answer("Додано")
+
 
 @router.message(F.text == "🧺 Кошик")
 async def show_cart(m: types.Message):
@@ -110,12 +132,14 @@ async def show_cart(m: types.Message):
         reply_markup=cart_kb(total)
     )
 
+
 @router.callback_query(F.data == "clear")
 async def clear_cart(cb: types.CallbackQuery):
     d = load_data()
     d["carts"][str(cb.from_user.id)] = []
     save_data(d)
     await cb.answer("Очищено")
+
 
 @router.callback_query(F.data == "checkout")
 async def checkout(cb: types.CallbackQuery):
@@ -140,6 +164,7 @@ async def checkout(cb: types.CallbackQuery):
 
     await cb.message.answer(f"Замовлення #{oid}\nСума: {total:.2f} ₴", reply_markup=pay_kb(oid))
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("pay:"))
 async def pay(cb: types.CallbackQuery):
