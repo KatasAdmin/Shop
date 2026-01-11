@@ -9,7 +9,7 @@ from utils import is_admin, is_staff, format_order_text
 
 router = Router()
 
-NO_SUB = "_"  # системная подкатегория для "Без підкатегорії"
+NO_SUB = "_"  # системна підкатегорія "Без підкатегорії"
 
 
 # -------------------- MENUS --------------------
@@ -24,7 +24,6 @@ def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
     if is_admin(uid):
         rows.append([types.KeyboardButton(text="👤 Додати менеджера")])
     rows.append([types.KeyboardButton(text="❌ Відміна")])
-
     return types.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -62,12 +61,37 @@ def confirm_kb(ok_cb: str):
     return kb.as_markup()
 
 
+def confirm_product_delete_kb(pid: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Так, видалити", callback_data=f"adm:del:{pid}")
+    kb.button(text="❌ Ні", callback_data="adm:cancel")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
 def edit_menu_kb(pid: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Назва", callback_data=f"adm:edit:name:{pid}")
     kb.button(text="💰 Ціна", callback_data=f"adm:edit:price:{pid}")
     kb.button(text="📝 Опис", callback_data=f"adm:edit:desc:{pid}")
     kb.button(text="⬅️ Назад", callback_data="adm:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def product_actions_kb(pid: int):
+    d = load_data()
+    hits = set(d.get("hits", []))
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Редагувати", callback_data=f"adm:editmenu:{pid}")
+    kb.button(text="🗑 Видалити", callback_data=f"adm:delask:{pid}")
+
+    if pid in hits:
+        kb.button(text="❌ Прибрати з Хітів", callback_data=f"adm:hit:off:{pid}")
+    else:
+        kb.button(text="🔥 Додати в Хіти", callback_data=f"adm:hit:on:{pid}")
+
     kb.adjust(1)
     return kb.as_markup()
 
@@ -286,7 +310,7 @@ async def add_sub_name(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Підкатегорію «{sub}» додано в «{cat}».", reply_markup=staff_menu(m.from_user.id))
 
 
-# -------------------- CATEGORY / SUBCATEGORY MGMT --------------------
+# -------------------- CATEGORY / SUBCATEGORY MGMT (DELETE) --------------------
 
 @router.message(F.text == "🗂 Категорії/Підкатегорії")
 async def cat_mgmt(m: types.Message):
@@ -338,6 +362,12 @@ async def cat_del(cb: types.CallbackQuery):
 
     cat = cb.data.split(":")[2]
     if cat in d["categories"]:
+        hits = set(d.get("hits", []))
+        for sub, items in d["categories"][cat].items():
+            for p in items:
+                hits.discard(p.get("id"))
+        d["hits"] = list(hits)
+
         del d["categories"][cat]
         save_data(d)
         await cb.message.answer(f"✅ Категорію «{cat}» видалено.")
@@ -385,6 +415,11 @@ async def sub_del(cb: types.CallbackQuery):
 
     _, _, cat, sub = cb.data.split(":")
     if cat in d["categories"] and sub in d["categories"][cat]:
+        hits = set(d.get("hits", []))
+        for p in d["categories"][cat][sub]:
+            hits.discard(p.get("id"))
+        d["hits"] = list(hits)
+
         del d["categories"][cat][sub]
         save_data(d)
         await cb.message.answer(f"✅ Підкатегорію «{sub}» видалено.")
@@ -528,9 +563,7 @@ async def prod_done(m: types.Message, state: FSMContext):
 
     await state.clear()
     await m.answer(f"✅ Товар додано: {product['name']} (ID: {pid})", reply_markup=staff_menu(m.from_user.id))
-
-
-# -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
+    # -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
 
 @router.message(F.text == "🛠 Товари")
 async def products_btn(m: types.Message):
@@ -553,9 +586,13 @@ async def plist_pick_cat(cb: types.CallbackQuery):
     cat = cb.data.split(":")[3]
     subs = d["categories"].get(cat, {})
     if not subs:
-        return await cb.message.answer("У категорії немає підкатегорій/товарів.")
+        await cb.message.answer("У категорії немає підкатегорій/товарів.")
+        return await cb.answer()
 
-    await cb.message.answer("Оберіть підкатегорію (або без):", reply_markup=subs_inline(cat, "plist_sub", include_no_sub=True))
+    await cb.message.answer(
+        "Оберіть підкатегорію (або без):",
+        reply_markup=subs_inline(cat, "plist_sub", include_no_sub=True)
+    )
     await cb.answer()
 
 
@@ -574,12 +611,46 @@ async def plist_pick_sub(cb: types.CallbackQuery):
     for p in items:
         txt = f"🆔 {p['id']}\n<b>{p['name']}</b>\n💰 {p['price']} ₴\n\n{p.get('description','')}"
         if p.get("photos"):
-            await cb.message.answer_photo(p["photos"][0], caption=txt, parse_mode="HTML", reply_markup=product_actions_kb(p["id"]))
+            await cb.message.answer_photo(
+                p["photos"][0],
+                caption=txt,
+                parse_mode="HTML",
+                reply_markup=product_actions_kb(p["id"])
+            )
         else:
             await cb.message.answer(txt, parse_mode="HTML", reply_markup=product_actions_kb(p["id"]))
 
     await cb.answer()
 
+
+# -------------------- HITS / PROMOS --------------------
+
+@router.callback_query(F.data.startswith("adm:hit:"))
+async def toggle_hit(cb: types.CallbackQuery):
+    d = load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    _, _, mode, pid_str = cb.data.split(":")
+    pid = int(pid_str)
+
+    d.setdefault("hits", [])
+    hits = set(d["hits"])
+
+    if mode == "on":
+        hits.add(pid)
+        await cb.answer("Додано в Хіти 🔥")
+    else:
+        hits.discard(pid)
+        await cb.answer("Прибрано з Хітів")
+
+    d["hits"] = list(hits)
+    save_data(d)
+
+    await cb.message.answer("✅ Оновлено (Хіти/Акції).")
+
+
+# -------------------- DELETE PRODUCT --------------------
 
 @router.callback_query(F.data.startswith("adm:delask:"))
 async def product_del_ask(cb: types.CallbackQuery):
@@ -602,6 +673,7 @@ async def product_del(cb: types.CallbackQuery):
 
     pid = int(cb.data.split(":")[2])
     deleted = False
+
     for cat in d["categories"].values():
         for sub, items in cat.items():
             for i, p in enumerate(items):
@@ -614,6 +686,11 @@ async def product_del(cb: types.CallbackQuery):
         if deleted:
             break
 
+    # прибираємо з hits
+    hits = set(d.get("hits", []))
+    hits.discard(pid)
+    d["hits"] = list(hits)
+
     if deleted:
         save_data(d)
         await cb.message.answer("✅ Товар видалено.")
@@ -621,6 +698,8 @@ async def product_del(cb: types.CallbackQuery):
         await cb.message.answer("❌ Товар не знайдено.")
     await cb.answer()
 
+
+# -------------------- EDIT PRODUCT --------------------
 
 @router.callback_query(F.data.startswith("adm:editmenu:"))
 async def edit_menu(cb: types.CallbackQuery, state: FSMContext):
@@ -634,7 +713,11 @@ async def edit_menu(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.answer("❌ Товар не знайдено.")
         return await cb.answer()
 
-    await cb.message.answer(f"Редагування: <b>{p['name']}</b>", parse_mode="HTML", reply_markup=edit_menu_kb(pid))
+    await cb.message.answer(
+        f"Редагування: <b>{p['name']}</b>",
+        parse_mode="HTML",
+        reply_markup=edit_menu_kb(pid)
+    )
     await cb.answer()
 
 
