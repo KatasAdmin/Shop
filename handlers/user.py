@@ -8,9 +8,12 @@ from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
 
+# PREMIUM TEXT
+from text import product_card, cart_summary
+
 router = Router()
 
-NO_SUB = "_"  # системна підкатегорія "Без підкатегорії"
+NO_SUB = "_"  # системна підкатегорія (твоя кнопка "(🔥Хіти/Акції)")
 
 
 # -------------------- USER MENU --------------------
@@ -39,7 +42,7 @@ def catalog_kb(cats):
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # кнопка "Без підкатегорії"
+    # кнопка "NO_SUB" (ти її назвав "(🔥Хіти/Акції)")
     kb.button(text="(🔥Хіти/Акції)", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
@@ -90,7 +93,8 @@ def is_fav(d, uid: int, pid: int) -> bool:
 
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
-    txt = f"<b>{p['name']}</b>\n💰 {p['price']} ₴\n\n{p.get('description', '')}"
+    # PREMIUM PRODUCT CARD
+    txt = product_card(p)
     kb = product_kb(p["id"], fav=is_fav(d, uid, p["id"]))
 
     photos = p.get("photos", [])
@@ -243,15 +247,17 @@ async def show_cart(m: types.Message):
     if not cart:
         return await m.answer("Кошик порожній")
 
-    total = cart_total(d, cart)
-    lines = []
+    items = []
     for pid in cart:
-        p = find_product(d, pid)
+        p = find_product(d, int(pid))
         if p:
-            lines.append(f"• {p['name']} — {p['price']} ₴")
+            items.append(p)
+
+    total = cart_total(d, cart)
 
     await m.answer(
-        "🧺 Кошик:\n" + "\n".join(lines) + f"\n\nРазом: {total:.2f} ₴",
+        cart_summary(items),
+        parse_mode="HTML",
         reply_markup=cart_kb(total)
     )
 
@@ -383,10 +389,8 @@ async def pay(cb: types.CallbackQuery):
         return await cb.answer("Вже оплачено ✅", show_alert=True)
 
     if order.get("status") != "pending":
-        # якщо менеджер вже взяв в роботу або завершив - не даємо "оплатити"
         return await cb.answer("Це замовлення вже обробляється.", show_alert=True)
 
-    # робимо "успішну оплату"
     order["status"] = "paid"
 
     # чистимо кошик ТІЛЬКИ після оплати
@@ -395,7 +399,6 @@ async def pay(cb: types.CallbackQuery):
 
     save_data(d)
 
-    # повідомлення користувачу
     await cb.message.answer(
         f"✅ Оплачено (симуляція).\n\n"
         f"Дякуємо! Замовлення #{oid} прийнято.\n"
@@ -404,7 +407,6 @@ async def pay(cb: types.CallbackQuery):
     )
     await cb.answer()
 
-    # повідомлення менеджерам/адміну
     txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + format_order_text(d, order)
     await notify_staff(cb.bot, txt)
 
