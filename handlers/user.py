@@ -5,7 +5,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
-from utils import notify_managers, format_order_text
+from utils import notify_managers_order
 
 router = Router()
 
@@ -13,13 +13,8 @@ router = Router()
 def main_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
         keyboard=[
-            [
-                types.KeyboardButton(text="🛍 Каталог"),
-                types.KeyboardButton(text="🧺 Кошик"),
-            ],
-            [
-                types.KeyboardButton(text="📦 Історія замовлень"),
-            ],
+            [types.KeyboardButton(text="🛍 Каталог"), types.KeyboardButton(text="🧺 Кошик")],
+            [types.KeyboardButton(text="📦 Історія замовлень")],
         ],
         resize_keyboard=True
     )
@@ -69,6 +64,29 @@ def contact_kb():
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def delivery_method_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📦 Нова Пошта (відділення/поштомат)", callback_data="dm:np")
+    kb.button(text="🚚 Кур’єр (адреса)", callback_data="dm:courier")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def normalize_phone(text: str) -> str:
+    t = (text or "").strip()
+    # оставить только + и цифры
+    res = []
+    for ch in t:
+        if ch.isdigit() or ch == "+":
+            res.append(ch)
+    return "".join(res)
+
+
+def is_valid_phone(phone: str) -> bool:
+    digits = [c for c in phone if c.isdigit()]
+    return len(digits) >= 10
 
 
 @router.message(CommandStart())
@@ -185,36 +203,57 @@ async def order_name(m: types.Message, state: FSMContext):
 
 @router.message(OrderFSM.phone, F.contact)
 async def order_phone_contact(m: types.Message, state: FSMContext):
-    phone = (m.contact.phone_number or "").strip()
-    if not phone:
-        return await m.answer("Не бачу номер. Спробуйте ще раз.")
+    phone = normalize_phone(m.contact.phone_number or "")
+    if not is_valid_phone(phone):
+        return await m.answer("Невірний номер. Спробуйте ще раз.")
     await state.update_data(phone=phone)
-    await state.set_state(OrderFSM.address)
-    await m.answer("Введіть адресу доставки:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(OrderFSM.city)
+    await m.answer("Введіть місто доставки:", reply_markup=types.ReplyKeyboardRemove())
 
 
 @router.message(OrderFSM.phone)
 async def order_phone_text(m: types.Message, state: FSMContext):
-    t = (m.text or "").strip()
-    if t == "✍️ Ввести номер вручну":
-        return await m.answer("Введіть номер телефону текстом (наприклад +380...):", reply_markup=types.ReplyKeyboardRemove())
+    if (m.text or "").strip() == "✍️ Ввести номер вручну":
+        return await m.answer("Введіть номер телефону (наприклад +380XXXXXXXXX):", reply_markup=types.ReplyKeyboardRemove())
 
-    # минимальная проверка
-    phone = t.replace(" ", "")
-    if len(phone) < 6:
-        return await m.answer("Невірний номер. Введіть ще раз (наприклад +380...):")
-
+    phone = normalize_phone(m.text or "")
+    if not is_valid_phone(phone):
+        return await m.answer("Невірний номер. Введіть ще раз (наприклад +380XXXXXXXXX):")
     await state.update_data(phone=phone)
-    await state.set_state(OrderFSM.address)
-    await m.answer("Введіть адресу доставки:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(OrderFSM.city)
+    await m.answer("Введіть місто доставки:", reply_markup=types.ReplyKeyboardRemove())
 
 
-@router.message(OrderFSM.address)
-async def order_address(m: types.Message, state: FSMContext):
-    address = (m.text or "").strip()
-    if not address:
-        return await m.answer("Введіть адресу текстом.")
-    await state.update_data(address=address)
+@router.message(OrderFSM.city)
+async def order_city(m: types.Message, state: FSMContext):
+    city = (m.text or "").strip()
+    if not city:
+        return await m.answer("Введіть місто текстом.")
+    await state.update_data(city=city)
+    await state.set_state(OrderFSM.delivery_method)
+    await m.answer("Оберіть спосіб доставки:", reply_markup=delivery_method_kb())
+
+
+@router.callback_query(F.data.startswith("dm:"), OrderFSM.delivery_method)
+async def order_delivery_method(cb: types.CallbackQuery, state: FSMContext):
+    dm = cb.data.split(":")[1]
+    if dm == "np":
+        await state.update_data(delivery_method="Нова Пошта")
+        await state.set_state(OrderFSM.delivery_point)
+        await cb.message.answer("Введіть відділення/поштомат Нової Пошти (номер або адреса):")
+    else:
+        await state.update_data(delivery_method="Кур’єр")
+        await state.set_state(OrderFSM.delivery_point)
+        await cb.message.answer("Введіть адресу для кур’єра (вулиця, будинок, квартира):")
+    await cb.answer()
+
+
+@router.message(OrderFSM.delivery_point)
+async def order_delivery_point(m: types.Message, state: FSMContext):
+    point = (m.text or "").strip()
+    if not point:
+        return await m.answer("Введіть дані текстом.")
+    await state.update_data(delivery_point=point)
     await state.set_state(OrderFSM.comment)
     await m.answer("Коментар до доставки? (або напишіть '-' щоб пропустити)")
 
@@ -242,11 +281,12 @@ async def order_comment(m: types.Message, state: FSMContext):
         "status": "new",  # станет paid после оплаты
         "customer_name": st.get("customer_name", ""),
         "phone": st.get("phone", ""),
-        "address": st.get("address", ""),
+        "city": st.get("city", ""),
+        "delivery_method": st.get("delivery_method", ""),
+        "delivery_point": st.get("delivery_point", ""),
         "comment": comment,
     })
 
-    # очищаем корзину
     d["carts"][uid] = []
     save_data(d)
 
@@ -257,7 +297,7 @@ async def order_comment(m: types.Message, state: FSMContext):
     )
 
 
-# ====== PAY: после "оплачено" — уведомляем менеджеров ======
+# ====== PAY: после оплаты — уведомляем менеджеров (и не спамим повторно) ======
 
 @router.callback_query(F.data.startswith("pay:"))
 async def pay(cb: types.CallbackQuery):
@@ -267,18 +307,27 @@ async def pay(cb: types.CallbackQuery):
     order = None
     for o in d["orders"]:
         if o["id"] == oid:
-            o["status"] = "paid"
             order = o
             break
 
+    if not order:
+        await cb.answer("Замовлення не знайдено", show_alert=True)
+        return
+
+    # защита от повторной оплаты
+    if order.get("status") in ("paid", "done"):
+        await cb.answer("Вже оплачено ✅", show_alert=True)
+        await cb.message.answer("🏠 Меню", reply_markup=main_menu())
+        return
+
+    order["status"] = "paid"
     save_data(d)
 
-    if order:
-        # Формируем полный текст для менеджера
-        text = "💰 ОПЛАЧЕНО!\n\n" + format_order_text(d, order)
-        await notify_managers(cb.bot, text)
+    # уведомляем менеджеров с фото
+    await notify_managers_order(cb.bot, d, order)
 
     await cb.message.answer("✅ Оплачено (симуляція)")
+    await cb.message.answer("🏠 Меню", reply_markup=main_menu())
     await cb.answer()
 
 
