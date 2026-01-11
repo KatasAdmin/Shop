@@ -162,7 +162,16 @@ async def orders_all(m: types.Message):
         return await m.answer("Замовлень ще немає.")
 
     for o in reversed(d["orders"]):
-        await m.answer(format_order_text(d, o), reply_markup=order_actions_kb(o["id"], o.get("status", "")))
+        products = []
+for pid in o.get("items", []):
+    p = find_product(d, pid)
+    if p:
+        products.append(p)
+
+await m.answer(
+    order_premium_text(d, o, products),
+    parse_mode="HTML"
+), reply_markup=order_actions_kb(o["id"], o.get("status", "")))
 
 
 @router.callback_query(F.data.startswith("adm:order:"))
