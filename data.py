@@ -12,7 +12,9 @@ def default_data() -> Dict[str, Any]:
         "categories": {},
         "carts": {},
         "orders": [],
-        "managers": []
+        "managers": [],
+        "favorites": {},  # ⭐ обране по юзерам (str(user_id) -> [pid])
+        "hits": []        # 🔥 список pid "Хіти/Акції"
     }
 
 
@@ -79,6 +81,7 @@ def load_data() -> Dict[str, Any]:
         for k, v in default_data().items():
             d.setdefault(k, v)
 
+        # если раньше было history — убираем (на будущее)
         if "history" in d:
             del d["history"]
             with open(DATA_FILE, "w", encoding="utf-8") as f:
