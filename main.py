@@ -10,9 +10,9 @@ from data import load_data, save_data
 
 
 async def main():
-    # 1) Підтягуємо data.json з GitHub на старті (якщо є)
+    # 1) Один раз на старті: pull з GitHub -> зберегли локально
     remote = pull_data_if_possible()
-    if remote:
+    if isinstance(remote, dict):
         save_data(remote)
 
     bot = Bot(token=BOT_TOKEN)
@@ -21,7 +21,7 @@ async def main():
     dp.include_router(user_router)
     dp.include_router(admin_router)
 
-    # 2) Запускаємо періодичний пуш в GitHub
+    # 2) Фоновий пуш (НЕ pull)
     start_periodic_sync(load_data)
 
     await dp.start_polling(bot)
