@@ -424,7 +424,7 @@ async def support(m: types.Message):
     await m.answer(
         "🆘 Підтримка\n\n"
         "Напишіть нам:\n"
-        "• Telegram: @YOUR_SUPPORT_USERNAME\n"
+        "• Telegram: @katas_support\n"
         "• Або просто відповідайте на це повідомлення — ми передамо менеджеру.",
         reply_markup=main_menu()
     )
