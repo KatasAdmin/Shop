@@ -3,5 +3,6 @@
   "carts": {},
   "orders": [],
   "managers": [],
-  "hits": []
+  "hits": [],
+  "favorites": {}
 }
