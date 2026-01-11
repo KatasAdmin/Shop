@@ -176,3 +176,19 @@ async def pay(cb: types.CallbackQuery):
     save_data(d)
     await cb.message.answer("✅ Оплачено (симуляція)")
     await cb.answer()
+
+
+@router.message(F.text == "📦 Історія замовлень")
+async def order_history(m: types.Message):
+    d = load_data()
+    uid = m.from_user.id
+    my = [o for o in d["orders"] if o.get("user_id") == uid]
+    if not my:
+        return await m.answer("Історія порожня.")
+
+    lines = []
+    # показываем последние 20
+    for o in reversed(my[-20:]):
+        lines.append(f"#{o['id']} — {o.get('status','new')} — {o.get('total',0):.2f} ₴")
+
+    await m.answer("📦 Ваші замовлення:\n" + "\n".join(lines))
