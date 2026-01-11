@@ -5,7 +5,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from data import load_data, save_data, next_product_id, find_product
 from states import AdminFSM, EditProductFSM
-from utils import is_admin, is_staff, format_order_text
+from utils import is_admin, is_staff
+from text import order_premium_text
 
 router = Router()
 
@@ -138,6 +139,16 @@ async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
 
 # -------------------- ORDERS --------------------
 
+def order_actions_kb(oid: int, status: str):
+    kb = InlineKeyboardBuilder()
+    if status == "paid":
+        kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
+    if status in ("paid", "in_work"):
+        kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
+    kb.adjust(1)
+    return kb.as_markup() if kb.buttons else None
+
+
 @router.message(F.text == "📋 Нові (оплачені)")
 async def orders_paid(m: types.Message):
     d = load_data()
@@ -150,15 +161,16 @@ async def orders_paid(m: types.Message):
 
     for o in paid:
         products = []
-for pid in o.get("items", []):
-    p = find_product(d, pid)
-    if p:
-        products.append(p)
+        for pid in o.get("items", []):
+            p = find_product(d, pid)
+            if p:
+                products.append(p)
 
-await m.answer(
-    order_premium_text(d, o, products),
-    parse_mode="HTML"
-), reply_markup=order_actions_kb(o["id"], o.get("status", "")))
+        await m.answer(
+            order_premium_text(d, o, products),
+            parse_mode="HTML",
+            reply_markup=order_actions_kb(o["id"], o.get("status", ""))
+        )
 
 
 @router.message(F.text == "📦 Усі замовлення")
@@ -172,15 +184,16 @@ async def orders_all(m: types.Message):
 
     for o in reversed(d["orders"]):
         products = []
-for pid in o.get("items", []):
-    p = find_product(d, pid)
-    if p:
-        products.append(p)
+        for pid in o.get("items", []):
+            p = find_product(d, pid)
+            if p:
+                products.append(p)
 
-await m.answer(
-    order_premium_text(d, o, products),
-    parse_mode="HTML"
-), reply_markup=order_actions_kb(o["id"], o.get("status", "")))
+        await m.answer(
+            order_premium_text(d, o, products),
+            parse_mode="HTML",
+            reply_markup=order_actions_kb(o["id"], o.get("status", ""))
+        )
 
 
 @router.callback_query(F.data.startswith("adm:order:"))
