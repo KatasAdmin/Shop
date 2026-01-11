@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ===================== CONFIG =====================
-TELEGRAM_TOKEN = "PASTE_YOUR_TOKEN_HERE"   # ← ВСТАВЬ СВОЙ ТОКЕН
+TELEGRAM_TOKEN = "8525972479:AAGyRAVgDD8AJ5LJ9yUzCqvTPZ2nej6OBdY"   # ← ВСТАВЬ СВОЙ ТОКЕН
 ADMIN_ID = 8385663990
 
 DATA_FILE = "data.json"
