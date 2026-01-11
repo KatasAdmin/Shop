@@ -39,7 +39,7 @@ def catalog_kb(cats):
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # Кнопка "Без підкатегорії"
+    # кнопка "Без підкатегорії"
     kb.button(text="(Без підкатегорії)", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
@@ -98,6 +98,13 @@ async def send_product(message: types.Message, d, uid: int, p: dict):
         await message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
     else:
         await message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+def find_order(d, oid: int):
+    for o in d.get("orders", []):
+        if o.get("id") == oid:
+            return o
+    return None
 
 
 # -------------------- START --------------------
@@ -337,9 +344,9 @@ async def order_finish(m: types.Message, state: FSMContext):
     d["orders"].append({
         "id": oid,
         "user_id": m.from_user.id,
-        "items": cart,
+        "items": cart,  # IMPORTANT: не чистимо кошик тут!
         "total": total,
-        "status": "new",
+        "status": "pending",  # ще не оплачено
         "delivery": {
             "name": st.get("name", ""),
             "phone": st.get("phone", ""),
@@ -349,13 +356,13 @@ async def order_finish(m: types.Message, state: FSMContext):
         }
     })
 
-    d.setdefault("carts", {})
-    d["carts"][uid_str] = []
     save_data(d)
-
     await state.clear()
+
     await m.answer(
-        f"✅ Замовлення створено #{oid}\nСума: {total:.2f} ₴\n\nНатисніть «Оплатити» (симуляція).",
+        f"✅ Замовлення створено #{oid}\n"
+        f"Сума: {total:.2f} ₴\n\n"
+        f"Натисніть «Оплатити» (симуляція).",
         reply_markup=pay_kb(oid)
     )
 
@@ -367,17 +374,34 @@ async def pay(cb: types.CallbackQuery):
     d = load_data()
     oid = int(cb.data.split(":")[1])
 
-    order = next((o for o in d.get("orders", []) if o.get("id") == oid), None)
+    order = find_order(d, oid)
     if not order:
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    # оновлюємо статус
+    if order.get("status") == "paid":
+        return await cb.answer("Вже оплачено ✅", show_alert=True)
+
+    if order.get("status") != "pending":
+        # якщо менеджер вже взяв в роботу або завершив - не даємо "оплатити"
+        return await cb.answer("Це замовлення вже обробляється.", show_alert=True)
+
+    # робимо "успішну оплату"
     order["status"] = "paid"
+
+    # чистимо кошик ТІЛЬКИ після оплати
+    d.setdefault("carts", {})
+    d["carts"][str(order["user_id"])] = []
+
     save_data(d)
 
     # повідомлення користувачу
-    await cb.message.answer("✅ Оплачено (симуляція). Дякуємо! Менеджер зв’яжеться з вами.", reply_markup=main_menu())
+    await cb.message.answer(
+        f"✅ Оплачено (симуляція).\n\n"
+        f"Дякуємо! Замовлення #{oid} прийнято.\n"
+        f"Менеджер зв’яжеться з вами найближчим часом.",
+        reply_markup=main_menu()
+    )
     await cb.answer()
 
     # повідомлення менеджерам/адміну
@@ -407,6 +431,6 @@ async def support(m: types.Message):
         "🆘 Підтримка\n\n"
         "Якщо є питання — напишіть сюди:\n"
         "• Telegram: @your_support\n"
-        "• Або просто відповідайте на це повідомлення текстом, і ми додамо пересилку менеджеру пізніше.",
+        "• Або просто відповідайте на це повідомлення — ми зробимо пересилку менеджеру пізніше.",
         reply_markup=main_menu()
     )
