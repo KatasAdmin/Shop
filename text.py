@@ -37,6 +37,11 @@ def _now_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
 def is_promo_active(p: Dict[str, Any], now_ts: Optional[int] = None) -> bool:
+    """
+    Promo logic:
+    - promo_price > 0
+    - promo_until_ts is None OR now <= promo_until_ts
+    """
     now = now_ts if now_ts is not None else _now_ts()
 
     promo_price = float(p.get("promo_price") or 0)
@@ -68,6 +73,10 @@ def money_uah(x: Any) -> str:
     return f"{v:.2f} ₴"
 
 def price_line(p: Dict[str, Any]) -> str:
+    """
+    Якщо є акція:  💰 ~~2499 ₴~~  <b>1999 ₴</b>  🔥 <b>-20%</b>
+    Інакше:         💰 <b>2499 ₴</b>
+    """
     base = p.get("base_price", p.get("price", 0))
     base_v = float(base or 0)
 
@@ -86,9 +95,6 @@ def price_line(p: Dict[str, Any]) -> str:
 # ---------- product / cart / order formatting ----------
 
 def product_card(p: Dict[str, Any]) -> str:
-    """
-    Преміум-картка товару для юзера
-    """
     name = esc(str(p.get("name", "Товар")))
     pid = p.get("id", "")
     desc = esc(str(p.get("description", "")).strip())
@@ -109,9 +115,6 @@ def product_card(p: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def product_short(p: Dict[str, Any]) -> str:
-    """
-    Рядок товару для кошика/списків
-    """
     name = esc(str(p.get("name", "Товар")))
     pid = p.get("id", "")
     base = p.get("base_price", p.get("price", 0))
@@ -122,32 +125,34 @@ def product_short(p: Dict[str, Any]) -> str:
 
     return f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
 
-def cart_summary(items: List[Dict[str, Any]]) -> str:
+def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
     """
-    Преміум-підсумок кошика
+    Гарне відображення кошика (HTML). items = список продуктів (dict).
     """
-    if not items:
-        return f"🛒 {b('Кошик порожній')}"
-
     now = _now_ts()
     total = 0.0
-    lines: List[str] = [f"🛒 {b('Ваш кошик')}", spacer()]
+
+    lines: List[str] = []
+    lines.append(f"🧺 {b('Кошик')}")
+    lines.append(spacer())
+
+    if not items:
+        lines.append("Кошик порожній.")
+        return "\n".join(lines)
 
     for p in items:
-        lines.append(product_short(p))
         if is_promo_active(p, now_ts=now):
             total += float(p.get("promo_price") or 0)
         else:
             total += float(p.get("base_price", p.get("price", 0)) or 0)
+        lines.append(product_short(p))
 
+    lines.append("")
     lines.append(spacer())
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
     return "\n".join(lines)
 
 def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: List[Dict[str, Any]]) -> str:
-    """
-    Преміум-картка замовлення для адміна/менеджера
-    """
     oid = order.get("id", "")
     status = str(order.get("status", "new"))
 
@@ -156,7 +161,7 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
         "in_work": "🟡 В роботі",
         "done": "✅ Завершено",
         "new": "🆕 Нове",
-        "pending": "🕒 Очікує оплату",
+        "pending": "⏳ Очікує оплату",
     }
     st = status_map.get(status, status)
 
@@ -192,15 +197,10 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     lines.append("")
 
     lines.append(f"🚚 {b('Доставка')}")
-    if cname:
-        lines.append(f"👤 {b('Імʼя')}: {cname}")
-    if phone:
-        lines.append(f"📞 {b('Телефон')}: {phone}")
-    if city:
-        lines.append(f"🏙 {b('Місто')}: {city}")
-    if np_branch:
-        lines.append(f"📦 {b('НП')}: {np_branch}")
-    if comment:
-        lines.append(f"📝 {b('Коментар')}: {i(comment)}")
+    if cname: lines.append(f"👤 {b('Імʼя')}: {cname}")
+    if phone: lines.append(f"📞 {b('Телефон')}: {phone}")
+    if city: lines.append(f"🏙 {b('Місто')}: {city}")
+    if np_branch: lines.append(f"📦 {b('НП')}: {np_branch}")
+    if comment: lines.append(f"📝 {b('Коментар')}: {i(comment)}")
 
     return "\n".join(lines)
