@@ -1,3 +1,4 @@
+# states.py
 from aiogram.fsm.state import StatesGroup, State
 
 
@@ -26,6 +27,5 @@ class OrderFSM(StatesGroup):
     name = State()
     phone = State()
     city = State()
-    delivery_method = State()
-    delivery_point = State()
+    np_branch = State()
     comment = State()
