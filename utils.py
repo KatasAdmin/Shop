@@ -1,4 +1,5 @@
 # utils.py
+
 from typing import Dict, Any, List
 
 from aiogram import Bot
@@ -47,24 +48,54 @@ async def notify_managers(bot: Bot, text: str):
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     """
-    Красивое текстовое представление заказа
+    Красивое текстовое представление заказа + данные доставки + товары (с описанием)
     """
-    lines: List[str] = []
+    detailed_lines: List[str] = []
 
     for pid in order.get("items", []):
         product = find_product(data, pid)
         if product:
-            lines.append(f"• {product['name']} — {product['price']} ₴")
+            name = product.get("name", f"Товар #{pid}")
+            price = float(product.get("price", 0))
+            desc = (product.get("description") or "").strip()
+
+            if desc:
+                detailed_lines.append(f"• {name} — {price:.2f} ₴\n   └ {desc}")
+            else:
+                detailed_lines.append(f"• {name} — {price:.2f} ₴")
         else:
-            lines.append(f"• Товар #{pid} (не знайдено)")
+            detailed_lines.append(f"• Товар #{pid} (не знайдено)")
 
     status = order.get("status", "new")
-    total = order.get("total", 0)
+    total = float(order.get("total", 0))
 
-    return (
-        f"🧾 Замовлення #{order['id']}\n"
-        f"👤 User ID: {order.get('user_id')}\n"
+    customer_name = order.get("customer_name", "—")
+    phone = order.get("phone", "—")
+    address = order.get("address", "—")
+    comment = (order.get("comment") or "").strip()
+
+    username = (order.get("username") or "").strip()
+    user_id = order.get("user_id", "—")
+
+    user_line = f"{user_id}"
+    if username:
+        user_line = f"@{username} (ID: {user_id})"
+
+    text = (
+        f"🧾 Замовлення #{order.get('id', '—')}\n"
+        f"👤 Клієнт: {user_line}\n"
         f"📌 Статус: {status}\n\n"
-        f"🛒 Склад:\n" + "\n".join(lines) +
+        f"📦 Дані доставки:\n"
+        f"• Ім'я: {customer_name}\n"
+        f"• Телефон: {phone}\n"
+        f"• Адреса: {address}\n"
+    )
+
+    if comment:
+        text += f"• Коментар: {comment}\n"
+
+    text += (
+        f"\n🛒 Товари:\n" + "\n".join(detailed_lines) +
         f"\n\n💰 Разом: {total:.2f} ₴"
     )
+    return text
