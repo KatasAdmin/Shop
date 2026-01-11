@@ -139,30 +139,20 @@ async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
 
 # -------------------- ORDERS --------------------
 
-def order_actions_kb(oid: int, status: str):
-    kb = InlineKeyboardBuilder()
-    if status == "paid":
-        kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
-    if status in ("paid", "in_work"):
-        kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
-    kb.adjust(1)
-    return kb.as_markup() if kb.buttons else None
-
-
 @router.message(F.text == "📋 Нові (оплачені)")
 async def orders_paid(m: types.Message):
     d = load_data()
     if not is_staff(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
 
-    paid = [o for o in d["orders"] if o.get("status") == "paid"]
+    paid = [o for o in d.get("orders", []) if o.get("status") == "paid"]
     if not paid:
         return await m.answer("Немає нових оплачених замовлень.")
 
     for o in paid:
         products = []
         for pid in o.get("items", []):
-            p = find_product(d, pid)
+            p = find_product(d, int(pid))
             if p:
                 products.append(p)
 
@@ -179,13 +169,14 @@ async def orders_all(m: types.Message):
     if not is_staff(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
 
-    if not d["orders"]:
+    orders = d.get("orders", [])
+    if not orders:
         return await m.answer("Замовлень ще немає.")
 
-    for o in reversed(d["orders"]):
+    for o in reversed(orders):
         products = []
         for pid in o.get("items", []):
-            p = find_product(d, pid)
+            p = find_product(d, int(pid))
             if p:
                 products.append(p)
 
@@ -205,7 +196,7 @@ async def order_change_status(cb: types.CallbackQuery):
     _, _, action, oid_str = cb.data.split(":")
     oid = int(oid_str)
 
-    order = next((o for o in d["orders"] if o.get("id") == oid), None)
+    order = next((o for o in d.get("orders", []) if o.get("id") == oid), None)
     if not order:
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
@@ -216,6 +207,7 @@ async def order_change_status(cb: types.CallbackQuery):
         order["status"] = "in_work"
         save_data(d)
         await cb.message.answer(f"🟡 Замовлення #{oid} взято в роботу.")
+
     elif action == "done":
         if order.get("status") not in ("paid", "in_work"):
             return await cb.answer("Неможливо завершити", show_alert=True)
