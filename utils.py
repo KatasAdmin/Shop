@@ -1,11 +1,12 @@
 # utils.py
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from aiogram import Bot
 
 from config import ADMIN_ID
 from data import load_data, find_product
 
+# преміум форматування
 from text import order_premium_text
 
 
@@ -16,7 +17,6 @@ def is_admin(uid: int) -> bool:
 
 
 def is_staff(data: Dict[str, Any], uid: int) -> bool:
-    # staff = admin + managers
     return uid in data.get("managers", []) or is_admin(uid)
 
 
@@ -24,7 +24,7 @@ def is_staff(data: Dict[str, Any], uid: int) -> bool:
 
 async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs):
     """
-    Безпечна відправка повідомлення (не падає, якщо чат недоступний)
+    Безпечна відправка повідомлення (не падає, якщо чат недоступний / blocked)
     """
     try:
         await bot.send_message(chat_id, text, **kwargs)
@@ -37,10 +37,10 @@ async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs):
 async def notify_staff(bot: Bot, text: str, **kwargs):
     """
     Відправка повідомлення всім менеджерам і адміну.
-    Підтримує parse_mode та інші kwargs.
+    Підтримує kwargs типу parse_mode="HTML".
     """
     data = load_data()
-    recipients = set(int(x) for x in data.get("managers", []) if str(x).isdigit())
+    recipients = set(int(x) for x in data.get("managers", []) or [])
     recipients.add(int(ADMIN_ID))
 
     for uid in recipients:
@@ -51,17 +51,19 @@ async def notify_staff(bot: Bot, text: str, **kwargs):
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     """
-    Преміум-текст замовлення для менеджера/адміна (HTML).
+    Преміум-текст замовлення (HTML) для менеджера/адміна.
+    Викликає text.order_premium_text(data, order, products)
     """
-    items: List[Dict[str, Any]] = []
-    for pid in order.get("items", []):
+    products: List[Dict[str, Any]] = []
+
+    for pid in order.get("items", []) or []:
         try:
             pid_int = int(pid)
         except Exception:
             continue
+
         p = find_product(data, pid_int)
         if p:
-            items.append(p)
+            products.append(p)
 
-    # ✅ Правильна сигнатура з text.py: (data, order, products)
-    return order_premium_text(data, order, items)
+    return order_premium_text(data, order, products)
