@@ -13,8 +13,8 @@ from text import product_card, cart_summary
 
 router = Router()
 
-NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
-PREPAY_AMOUNT = 200  # ✅ передплата для наложки
+NO_SUB = "_"        # системна підкатегорія (в UI показуємо як "🧷 Утлет")
+PREPAY_AMOUNT = 200 # ✅ передплата для наложки
 
 
 # -------------------- USER MENU --------------------
@@ -73,11 +73,6 @@ def cart_kb(total: float):
 
 
 def payment_choice_kb(oid: int, total: float):
-    """
-    ✅ Вибір способу оплати:
-    - повна оплата
-    - передплата 200 (наложка НП)
-    """
     kb = InlineKeyboardBuilder()
     kb.button(text=f"💳 Повна оплата ({total:.2f} ₴)", callback_data=f"pay_full:{oid}")
     kb.button(text=f"💵 Передплата {PREPAY_AMOUNT} ₴ (НП/наложка)", callback_data=f"pay_prepay:{oid}")
@@ -109,7 +104,7 @@ async def send_product(message: types.Message, d, uid: int, p: dict):
 
 
 def find_order(d, oid: int):
-    for o in d.get("orders", []):
+    for o in d.get("orders", []) or []:
         if int(o.get("id", -1)) == int(oid):
             return o
     return None
@@ -171,7 +166,7 @@ async def choose_sub(cb: types.CallbackQuery):
 @router.message(F.text == "🔥 Хіти/Акції")
 async def hits(m: types.Message):
     d = load_data()
-    hits_ids = set(int(x) for x in d.get("hits", []))
+    hits_ids = set(int(x) for x in d.get("hits", []) or [])
     if not hits_ids:
         return await m.answer("Поки що немає Хітів/Акцій.")
 
@@ -355,14 +350,12 @@ async def order_finish(m: types.Message, state: FSMContext):
         "total": float(total),
         "status": "pending",
 
-        # ✅ для обліку
         "created_ts": int(time.time()),
 
-        # ✅ оплата
         "payment_method": None,    # "full" | "np_prepay_200"
-        "paid_ts": None,           # для full
-        "prepay_amount": 0,        # для наложки
-        "prepay_ts": None,         # час передплати
+        "paid_ts": None,
+        "prepay_amount": 0,
+        "prepay_ts": None,
 
         "delivery": {
             "name": st.get("name", ""),
@@ -396,15 +389,14 @@ async def pay_full(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    if order.get("status") in ("paid", "prepay", "in_work", "done"):
+    # ✅ дозволяємо тільки з pending
+    if order.get("status") != "pending":
         return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
 
-    # ✅ симуляція повної оплати
     order["payment_method"] = "full"
     order["status"] = "paid"
     order["paid_ts"] = int(time.time())
 
-    # чистимо кошик
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
     save_data(d)
@@ -433,20 +425,19 @@ async def pay_prepay(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    if order.get("status") in ("paid", "prepay", "in_work", "done"):
+    # ✅ дозволяємо тільки з pending
+    if order.get("status") != "pending":
         return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
 
     total = float(order.get("total", 0) or 0)
     prepay = PREPAY_AMOUNT
     rest = max(0.0, total - prepay)
 
-    # ✅ симуляція передплати
     order["payment_method"] = "np_prepay_200"
     order["status"] = "prepay"
     order["prepay_amount"] = prepay
     order["prepay_ts"] = int(time.time())
 
-    # чистимо кошик
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
     save_data(d)
