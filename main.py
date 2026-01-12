@@ -1,28 +1,24 @@
+# main.py
 import asyncio
+
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN
 from handlers import user_router, admin_router
-
-from sync_github import pull_data_if_possible, start_periodic_sync
-from data import load_data, save_data
+from init_db import init_db
 
 
 async def main():
-    # ✅ 1) Пулл 1 раз на старті
-    remote = pull_data_if_possible()
-    if remote:
-        save_data(remote)
+    # 1) Ініціалізація БД (створить таблиці, якщо їх ще нема)
+    await init_db()
 
+    # 2) Запуск бота
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.include_router(user_router)
     dp.include_router(admin_router)
-
-    # ✅ 2) Періодичний пуш (можна лишити)
-    start_periodic_sync(load_data)
 
     await dp.start_polling(bot)
 
