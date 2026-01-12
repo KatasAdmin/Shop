@@ -937,8 +937,45 @@ async def edit_promo_until(m: types.Message, state: FSMContext):
         return await m.answer("✅ Акцію встановлено (без дати).", reply_markup=staff_menu(m.from_user.id))
 
     try:
-        dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
-        ts = int(dt.timestamp())
+        @router.message(EditProductFSM.promo_until)
+async def edit_promo_until(m: types.Message, state: FSMContext):
+    from datetime import datetime, timezone
+
+    d = load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    st = await state.get_data()
+    pid = st.get("pid")
+    p = find_product(d, pid)
+    if not p:
+        await state.clear()
+        return await m.answer("❌ Товар не знайдено.")
+
+    txt = (m.text or "").strip()
+
+    if txt == "-":
+        p["promo_until_ts"] = None
+        save_data(d)
+        await state.clear()
+        return await m.answer("✅ Акцію встановлено (без дати).", reply_markup=staff_menu(m.from_user.id))
+
+    # приймаємо 2 формати: YYYY-MM-DD або YYYY-MM-DD HH:MM
+    try:
+        if len(txt) == 10:
+            dt = datetime.strptime(txt, "%Y-%m-%d")
+        else:
+            dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
+
+        ts = int(dt.replace(tzinfo=timezone.utc).timestamp())
+    except Exception:
+        return await m.answer("❌ Невірний формат.\nПриклад:\n• 2026-01-20\n• 2026-01-20 23:59\n• або '-'")
+
+    p["promo_until_ts"] = ts
+    save_data(d)
+
+    await state.clear()
+    await m.answer("✅ Акцію встановлено.", reply_markup=staff_menu(m.from_user.id))
     except Exception:
         return await m.answer("❌ Невірний формат. Приклад: 2026-01-20 23:59 або '-'.")
 
