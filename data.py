@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from config import DATA_FILE, LOCK_FILE
 from sync_github import push_data_throttled
 
+from text import is_promo_active
+
 
 def default_data() -> Dict[str, Any]:
     return {
@@ -51,22 +53,10 @@ def ensure_data_dir():
 
 
 def _migrate(d: Dict[str, Any]) -> Dict[str, Any]:
-    # гарантуємо наявність ключів
     for k, v in default_data().items():
         d.setdefault(k, v)
-
-    # прибираємо старе/непотрібне
     if "history" in d:
         del d["history"]
-
-    # додатковий захист: типи
-    d.setdefault("orders", [])
-    d.setdefault("carts", {})
-    d.setdefault("favorites", {})
-    d.setdefault("hits", [])
-    d.setdefault("managers", [])
-    d.setdefault("categories", {})
-
     return d
 
 
@@ -108,46 +98,60 @@ def load_data() -> Dict[str, Any]:
         return _migrate(d)
 
 
+def _ensure_product_schema(p: Dict[str, Any]) -> None:
+    if "base_price" not in p:
+        p["base_price"] = p.get("price", 0) or 0
+    if "price" not in p:
+        p["price"] = p.get("base_price", 0) or 0
+    if "promo_price" not in p:
+        p["promo_price"] = 0
+    if "promo_until_ts" not in p:
+        p["promo_until_ts"] = None
+
+
 def next_product_id(data: Dict[str, Any]) -> int:
     return max(
-        (int(p.get("id", 0)) for cat in data["categories"].values() for sub in cat.values() for p in sub),
+        (int(p["id"]) for cat in data.get("categories", {}).values()
+         for sub in cat.values()
+         for p in sub),
         default=0
     ) + 1
 
 
 def next_order_id(data: Dict[str, Any]) -> int:
-    return max((int(o.get("id", 0)) for o in data.get("orders", [])), default=0) + 1
+    return max((int(o["id"]) for o in data.get("orders", []) or []), default=0) + 1
 
 
 def find_product(data: Dict[str, Any], pid: int) -> Optional[Dict[str, Any]]:
-    pid = int(pid)
     for cat in data.get("categories", {}).values():
         for sub in cat.values():
             for p in sub:
-                if int(p.get("id", -1)) == pid:
-                    return p
+                try:
+                    if int(p.get("id", -1)) == int(pid):
+                        _ensure_product_schema(p)
+                        return p
+                except Exception:
+                    continue
     return None
 
 
 def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
     """
-    ✅ Рахує правильно, з урахуванням акцій (promo_price/promo_until_ts),
-    і підтримує старі товари де base_price може бути відсутній.
+    Рахує суму кошика з урахуванням акцій.
     """
-    from text import is_promo_active  # логіка акцій вже там
-
+    now = int(time.time())
     total = 0.0
-    for pid in cart:
+
+    for pid in cart or []:
         p = find_product(data, int(pid))
         if not p:
             continue
 
-        base = float(p.get("base_price", p.get("price", 0)) or 0)
+        _ensure_product_schema(p)
 
-        if is_promo_active(p):
-            promo = float(p.get("promo_price") or 0)
-            total += promo if promo > 0 else base
+        if is_promo_active(p, now_ts=now):
+            total += float(p.get("promo_price") or 0)
         else:
-            total += base
+            total += float(p.get("base_price", p.get("price", 0)) or 0)
 
-    return total
+    return float(total)
