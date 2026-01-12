@@ -1,3 +1,4 @@
+# init_db.py
 from db import engine, Base
 import models  # важливо: щоб моделі підвантажились
 
