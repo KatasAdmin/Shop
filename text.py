@@ -20,11 +20,14 @@ def code(s: str) -> str:
     return f"<code>{s}</code>"
 
 def esc(text: str) -> str:
+    # Telegram HTML safe
     return (
         (text or "")
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
     )
 
 def spacer() -> str:
@@ -38,13 +41,17 @@ def _now_ts() -> int:
 
 def is_promo_active(p: Dict[str, Any], now_ts: Optional[int] = None) -> bool:
     """
-    Promo logic:
+    Promo active if:
     - promo_price > 0
     - promo_until_ts is None OR now <= promo_until_ts
     """
     now = now_ts if now_ts is not None else _now_ts()
 
-    promo_price = float(p.get("promo_price") or 0)
+    try:
+        promo_price = float(p.get("promo_price") or 0)
+    except Exception:
+        promo_price = 0.0
+
     if promo_price <= 0:
         return False
 
@@ -53,11 +60,12 @@ def is_promo_active(p: Dict[str, Any], now_ts: Optional[int] = None) -> bool:
         return True
 
     try:
-        until = int(until)
+        until_i = int(until)
     except Exception:
+        # якщо там щось не те — вважаємо що без дати
         return True
 
-    return now <= until
+    return now <= until_i
 
 
 # ---------- prices ----------
@@ -66,6 +74,10 @@ def money_uah(x: Any) -> str:
     try:
         v = float(x)
     except Exception:
+        v = 0.0
+
+    # захист від nan/inf
+    if v != v or v in (float("inf"), float("-inf")):
         v = 0.0
 
     if v.is_integer():
@@ -78,15 +90,23 @@ def price_line(p: Dict[str, Any]) -> str:
     Інакше:         💰 <b>2499 ₴</b>
     """
     base = p.get("base_price", p.get("price", 0))
-    base_v = float(base or 0)
+    try:
+        base_v = float(base or 0)
+    except Exception:
+        base_v = 0.0
 
     if is_promo_active(p):
-        promo_v = float(p.get("promo_price") or 0)
+        try:
+            promo_v = float(p.get("promo_price") or 0)
+        except Exception:
+            promo_v = 0.0
+
         perc = ""
         if base_v > 0 and promo_v > 0 and promo_v < base_v:
             off = int(round((1 - promo_v / base_v) * 100))
             if off > 0:
                 perc = f"  🔥 {b(f'-{off}%')}"
+
         return f"💰 {s_(money_uah(base_v))}  {b(money_uah(promo_v))}{perc}"
 
     return f"💰 {b(money_uah(base_v))}"
