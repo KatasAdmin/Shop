@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.orm import DeclarativeBase
+
+from config import DATABASE_URL
+
 
 def make_async_url(url: str) -> str:
     if url.startswith("postgres://"):
@@ -9,7 +14,7 @@ def make_async_url(url: str) -> str:
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
     return url
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
@@ -18,17 +23,15 @@ ASYNC_DATABASE_URL = make_async_url(DATABASE_URL)
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=False,
-    pool_pre_ping=True
+    pool_pre_ping=True,
 )
 
-AsyncSessionLocal = sessionmaker(
+SessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
+
 
 class Base(DeclarativeBase):
     pass
-
-async def get_session() -> AsyncSession:
-    return AsyncSessionLocal()
