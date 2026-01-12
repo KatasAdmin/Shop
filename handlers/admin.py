@@ -136,12 +136,25 @@ async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
 def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup | None:
     kb = InlineKeyboardBuilder()
 
-    # ✅ prepay теж "нове" замовлення
+    # взяти в роботу
     if status in ("paid", "prepay"):
         kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
 
+    # фініш “всередині” (залишимо як було)
     if status in ("paid", "prepay", "in_work"):
         kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
+
+    # ✅ логістика/бух-статуси (для себе)
+    if status in ("paid", "prepay", "in_work", "shipped"):
+        kb.button(text="🚚 Відправлено", callback_data=f"adm:order:shipped:{oid}")
+
+    if status in ("shipped",):
+        kb.button(text="✅ Забрав (продано)", callback_data=f"adm:order:picked:{oid}")
+        kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
+        kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
+
+    # історія покупця (працює завжди)
+    kb.button(text="📜 Історія покупця", callback_data=f"adm:order:history:{oid}")
 
     kb.adjust(1)
     return kb.as_markup() if kb.buttons else None
@@ -243,21 +256,80 @@ async def order_change_status(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
+    # ----------------- стандартні -----------------
     if action == "in_work":
         if order.get("status") not in ("paid", "prepay"):
             return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
         order["status"] = "in_work"
         await save_data(d)
         await cb.message.answer(f"🟡 Замовлення #{oid} взято в роботу.")
+        return await cb.answer()
 
-    elif action == "done":
-        if order.get("status") not in ("paid", "prepay", "in_work"):
+    if action == "done":
+        if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо завершити", show_alert=True)
         order["status"] = "done"
         await save_data(d)
         await cb.message.answer(f"✅ Замовлення #{oid} завершено.")
+        return await cb.answer()
 
-    await cb.answer()
+    # ----------------- логістика -----------------
+    if action == "shipped":
+        if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
+            return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
+        order["status"] = "shipped"
+        await save_data(d)
+        await cb.message.answer(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
+        return await cb.answer()
+
+    if action == "picked":
+        if order.get("status") not in ("shipped",):
+            return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
+        order["status"] = "picked"
+        await save_data(d)
+        await cb.message.answer(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
+        return await cb.answer()
+
+    if action == "not_picked":
+        if order.get("status") not in ("shipped",):
+            return await cb.answer("Це доречно тільки після 'Відправлено'", show_alert=True)
+        order["status"] = "not_picked"
+        await save_data(d)
+        await cb.message.answer(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
+        return await cb.answer()
+
+    if action == "returned":
+        if order.get("status") not in ("shipped", "not_picked", "picked"):
+            return await cb.answer("Повернення ставимо після логістики", show_alert=True)
+        order["status"] = "returned"
+        await save_data(d)
+        await cb.message.answer(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
+        return await cb.answer()
+
+    # ----------------- історія покупця -----------------
+    if action == "history":
+        uid = int(order.get("user_id", 0) or 0)
+        if not uid:
+            await cb.message.answer("❌ У замовлення немає user_id.")
+            return await cb.answer()
+
+        user_orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == uid]
+        if not user_orders:
+            await cb.message.answer("Історія порожня.")
+            return await cb.answer()
+
+        user_link = f'<a href="tg://user?id={uid}">👤 Покупець</a>'
+        await cb.message.answer(user_link + "\n<b>📜 Історія замовлень покупця:</b>", parse_mode="HTML")
+
+        for o in reversed(user_orders):
+            await cb.message.answer(
+                order_premium_text(d, o, []),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+            )
+        return await cb.answer()
+
+    return await cb.answer()
 
 
 # -------------------- MANAGERS (ADMIN ONLY) --------------------
