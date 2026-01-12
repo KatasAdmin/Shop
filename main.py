@@ -1,6 +1,4 @@
-# main.py
 import asyncio
-
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -10,10 +8,8 @@ from init_db import init_db
 
 
 async def main():
-    # 1) Ініціалізація БД (створить таблиці, якщо їх ще нема)
     await init_db()
 
-    # 2) Запуск бота
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
