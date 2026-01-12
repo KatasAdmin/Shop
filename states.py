@@ -22,7 +22,6 @@ class EditProductFSM(StatesGroup):
     price = State()
     desc = State()
 
-    # ✅ для акцій
     promo_price = State()
     promo_until = State()
 
@@ -33,3 +32,6 @@ class OrderFSM(StatesGroup):
     city = State()
     np_branch = State()
     comment = State()
+
+    # ✅ нове: вибір оплати (повна / передплата 200)
+    pay_method = State()
