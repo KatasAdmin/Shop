@@ -51,10 +51,22 @@ def ensure_data_dir():
 
 
 def _migrate(d: Dict[str, Any]) -> Dict[str, Any]:
+    # гарантуємо наявність ключів
     for k, v in default_data().items():
         d.setdefault(k, v)
+
+    # прибираємо старе/непотрібне
     if "history" in d:
         del d["history"]
+
+    # додатковий захист: типи
+    d.setdefault("orders", [])
+    d.setdefault("carts", {})
+    d.setdefault("favorites", {})
+    d.setdefault("hits", [])
+    d.setdefault("managers", [])
+    d.setdefault("categories", {})
+
     return d
 
 
@@ -98,28 +110,44 @@ def load_data() -> Dict[str, Any]:
 
 def next_product_id(data: Dict[str, Any]) -> int:
     return max(
-        (p["id"] for cat in data["categories"].values() for sub in cat.values() for p in sub),
+        (int(p.get("id", 0)) for cat in data["categories"].values() for sub in cat.values() for p in sub),
         default=0
     ) + 1
 
 
 def next_order_id(data: Dict[str, Any]) -> int:
-    return max((o["id"] for o in data["orders"]), default=0) + 1
+    return max((int(o.get("id", 0)) for o in data.get("orders", [])), default=0) + 1
 
 
 def find_product(data: Dict[str, Any], pid: int) -> Optional[Dict[str, Any]]:
-    for cat in data["categories"].values():
+    pid = int(pid)
+    for cat in data.get("categories", {}).values():
         for sub in cat.values():
             for p in sub:
-                if p["id"] == pid:
+                if int(p.get("id", -1)) == pid:
                     return p
     return None
 
 
 def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
+    """
+    ✅ Рахує правильно, з урахуванням акцій (promo_price/promo_until_ts),
+    і підтримує старі товари де base_price може бути відсутній.
+    """
+    from text import is_promo_active  # логіка акцій вже там
+
     total = 0.0
     for pid in cart:
-        p = find_product(data, pid)
-        if p:
-            total += float(p["price"])
+        p = find_product(data, int(pid))
+        if not p:
+            continue
+
+        base = float(p.get("base_price", p.get("price", 0)) or 0)
+
+        if is_promo_active(p):
+            promo = float(p.get("promo_price") or 0)
+            total += promo if promo > 0 else base
+        else:
+            total += base
+
     return total
