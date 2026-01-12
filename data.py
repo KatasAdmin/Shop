@@ -1,10 +1,10 @@
 # data.py
-from text import is_promo_active
 from __future__ import annotations
 
 from typing import Dict, Any, List, Optional
 
-from sqlalchemy import select
+from text import is_promo_active
+
 from sqlalchemy.dialects.postgresql import insert
 
 from config import SHOP_STATE_KEY
