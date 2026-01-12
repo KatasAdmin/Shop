@@ -1,6 +1,5 @@
 # handlers/user.py
 from aiogram import Router, F, types
-from text import product_card, cart_summary
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -9,9 +8,11 @@ from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
 
+from text import product_card, cart_summary
+
 router = Router()
 
-NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "Уцінка")
+NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
 
 
 # -------------------- USER MENU --------------------
@@ -40,8 +41,8 @@ def catalog_kb(cats):
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # кнопка "Уцінка" (це твій NO_SUB)
-    kb.button(text="(Уцінка)", callback_data=f"sub:{cat}:{NO_SUB}")
+    # ✅ NO_SUB показуємо як "🧷 Утлет"
+    kb.button(text="🧷 Утлет", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
         if s == NO_SUB:
@@ -91,7 +92,8 @@ def is_fav(d, uid: int, pid: int) -> bool:
 
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
-    txt = f"<b>{p['name']}</b>\n💰 {p['price']} ₴\n\n{p.get('description', '')}"
+    # ✅ Преміум-картка товару
+    txt = product_card(p)
     kb = product_kb(p["id"], fav=is_fav(d, uid, p["id"]))
 
     photos = p.get("photos", [])
@@ -244,17 +246,16 @@ async def show_cart(m: types.Message):
     if not cart:
         return await m.answer("Кошик порожній")
 
-    total = cart_total(d, cart)
-    lines = []
+    items = []
     for pid in cart:
-        p = find_product(d, pid)
+        p = find_product(d, int(pid))
         if p:
-            lines.append(f"• {p['name']} — {p['price']} ₴")
+            items.append(p)
 
-    await m.answer(
-        "🧺 Кошик:\n" + "\n".join(lines) + f"\n\nРазом: {total:.2f} ₴",
-        reply_markup=cart_kb(total)
-    )
+    total = cart_total(d, cart)  # для кнопки "Оформити"
+    txt = cart_summary(d, items)
+
+    await m.answer(txt, parse_mode="HTML", reply_markup=cart_kb(total))
 
 
 @router.callback_query(F.data == "clear")
@@ -345,9 +346,9 @@ async def order_finish(m: types.Message, state: FSMContext):
     d["orders"].append({
         "id": oid,
         "user_id": m.from_user.id,
-        "items": cart,  # IMPORTANT: не чистимо кошик тут!
+        "items": cart,  # не чистимо кошик тут!
         "total": total,
-        "status": "pending",  # ще не оплачено
+        "status": "pending",
         "delivery": {
             "name": st.get("name", ""),
             "phone": st.get("phone", ""),
@@ -401,7 +402,7 @@ async def pay(cb: types.CallbackQuery):
     await cb.answer()
 
     txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + format_order_text(d, order)
-    await notify_staff(cb.bot, txt)
+    await notify_staff(cb.bot, txt, parse_mode="HTML")
 
 
 # -------------------- ORDERS HISTORY --------------------
@@ -415,7 +416,7 @@ async def history(m: types.Message):
         return await m.answer("Історія порожня.")
 
     for o in reversed(orders):
-        await m.answer(format_order_text(d, o))
+        await m.answer(format_order_text(d, o), parse_mode="HTML")
 
 
 # -------------------- SUPPORT --------------------
