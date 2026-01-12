@@ -444,7 +444,7 @@ async def sub_del(cb: types.CallbackQuery):
 
     _, _, cat, sub = cb.data.split(":")
     if cat in d["categories"] and sub in d["categories"][cat]:
-        hits = set(d.get("hits", []))
+        hits = set(int(x) for x in d["hits"])
         for p in d["categories"][cat][sub]:
             hits.discard(p.get("id"))
         d["hits"] = list(hits)
