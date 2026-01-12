@@ -10,14 +10,12 @@ from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
 from text import product_card, cart_summary
+from config import PREPAY_AMOUNT
 
 router = Router()
 
-NO_SUB = "_"        # системна підкатегорія (в UI показуємо як "🧷 Утлет")
-PREPAY_AMOUNT = 200 # ✅ передплата для наложки
+NO_SUB = "_"
 
-
-# -------------------- USER MENU --------------------
 
 def main_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
@@ -29,8 +27,6 @@ def main_menu() -> types.ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-
-# -------------------- INLINE KEYBOARDS --------------------
 
 def catalog_kb(cats):
     kb = InlineKeyboardBuilder()
@@ -56,10 +52,7 @@ def subcat_kb(cat: str, subs):
 def product_kb(pid: int, fav: bool = False):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
-    if fav:
-        kb.button(text="❌ З обраного", callback_data=f"fav:off:{pid}")
-    else:
-        kb.button(text="⭐ В обране", callback_data=f"fav:on:{pid}")
+    kb.button(text=("❌ З обраного" if fav else "⭐ В обране"), callback_data=f"fav:{'off' if fav else 'on'}:{pid}")
     kb.adjust(2)
     return kb.as_markup()
 
@@ -79,8 +72,6 @@ def payment_choice_kb(oid: int, total: float):
     kb.adjust(1)
     return kb.as_markup()
 
-
-# -------------------- HELPERS --------------------
 
 def user_favs(d, uid: int):
     d.setdefault("favorites", {})
@@ -104,13 +95,11 @@ async def send_product(message: types.Message, d, uid: int, p: dict):
 
 
 def find_order(d, oid: int):
-    for o in d.get("orders", []) or []:
+    for o in d.get("orders", []):
         if int(o.get("id", -1)) == int(oid):
             return o
     return None
 
-
-# -------------------- START --------------------
 
 @router.message(CommandStart())
 async def start(m: types.Message, state: FSMContext):
@@ -118,11 +107,9 @@ async def start(m: types.Message, state: FSMContext):
     await m.answer("🏠 Меню", reply_markup=main_menu())
 
 
-# -------------------- CATALOG --------------------
-
 @router.message(F.text == "🛍 Каталог")
 async def catalog(m: types.Message):
-    d = load_data()
+    d = await load_data()
     if not d.get("categories"):
         return await m.answer("Каталог порожній")
     await m.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
@@ -130,7 +117,7 @@ async def catalog(m: types.Message):
 
 @router.callback_query(F.data.startswith("cat:"))
 async def choose_cat(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     cat = cb.data.split(":", 1)[1]
     subs = d["categories"].get(cat, {})
     if not subs:
@@ -147,7 +134,7 @@ async def choose_cat(cb: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("sub:"))
 async def choose_sub(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     _, cat, sub = cb.data.split(":", 2)
 
     items = d["categories"].get(cat, {}).get(sub, [])
@@ -161,12 +148,10 @@ async def choose_sub(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# -------------------- HITS --------------------
-
 @router.message(F.text == "🔥 Хіти/Акції")
 async def hits(m: types.Message):
-    d = load_data()
-    hits_ids = set(int(x) for x in d.get("hits", []) or [])
+    d = await load_data()
+    hits_ids = set(int(x) for x in (d.get("hits", []) or []))
     if not hits_ids:
         return await m.answer("Поки що немає Хітів/Акцій.")
 
@@ -178,14 +163,12 @@ async def hits(m: types.Message):
             await send_product(m, d, m.from_user.id, p)
 
     if shown == 0:
-        await m.answer("Хіти є, але товари не знайдені (перевір data.json).")
+        await m.answer("Хіти є, але товари не знайдені.")
 
-
-# -------------------- FAVORITES --------------------
 
 @router.callback_query(F.data.startswith("fav:"))
 async def fav_toggle(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     uid = cb.from_user.id
 
     _, mode, pid_str = cb.data.split(":")
@@ -202,12 +185,12 @@ async def fav_toggle(cb: types.CallbackQuery):
         await cb.answer("❌ Прибрано з обраного")
 
     d["favorites"][str(uid)] = list(sset)
-    save_data(d)
+    await save_data(d)
 
 
 @router.message(F.text == "⭐ Обране")
 async def show_favs(m: types.Message):
-    d = load_data()
+    d = await load_data()
     favs = set(int(x) for x in user_favs(d, m.from_user.id))
     if not favs:
         return await m.answer("Обране порожнє.")
@@ -220,27 +203,25 @@ async def show_favs(m: types.Message):
             await send_product(m, d, m.from_user.id, p)
 
     if not any_sent:
-        await m.answer("Обране є, але товари не знайдені (можливо їх видалили).")
+        await m.answer("Обране є, але товари не знайдені.")
 
-
-# -------------------- CART --------------------
 
 @router.callback_query(F.data.startswith("add:"))
 async def add_cart(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     uid = str(cb.from_user.id)
     pid = int(cb.data.split(":")[1])
 
     d.setdefault("carts", {})
     d["carts"].setdefault(uid, []).append(pid)
-    save_data(d)
+    await save_data(d)
 
     await cb.answer("Додано 🛒")
 
 
 @router.message(F.text == "🧺 Кошик")
 async def show_cart(m: types.Message):
-    d = load_data()
+    d = await load_data()
     uid = str(m.from_user.id)
     cart = d.get("carts", {}).get(uid, [])
     if not cart:
@@ -260,18 +241,16 @@ async def show_cart(m: types.Message):
 
 @router.callback_query(F.data == "clear")
 async def clear_cart(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     d.setdefault("carts", {})
     d["carts"][str(cb.from_user.id)] = []
-    save_data(d)
+    await save_data(d)
     await cb.answer("Очищено 🗑")
 
 
-# -------------------- CHECKOUT (FORM) --------------------
-
 @router.callback_query(F.data == "checkout")
 async def checkout(cb: types.CallbackQuery, state: FSMContext):
-    d = load_data()
+    d = await load_data()
     uid = str(cb.from_user.id)
     cart = d.get("carts", {}).get(uid, [])
     if not cart:
@@ -332,7 +311,7 @@ async def order_finish(m: types.Message, state: FSMContext):
     st = await state.get_data()
     st["comment"] = comment
 
-    d = load_data()
+    d = await load_data()
     uid_str = str(m.from_user.id)
     cart = d.get("carts", {}).get(uid_str, [])
     if not cart:
@@ -348,11 +327,11 @@ async def order_finish(m: types.Message, state: FSMContext):
         "user_id": m.from_user.id,
         "items": list(cart),
         "total": float(total),
-        "status": "pending",
 
+        "status": "pending",
         "created_ts": int(time.time()),
 
-        "payment_method": None,    # "full" | "np_prepay_200"
+        "payment_method": None,   # "full" | "np_prepay_200"
         "paid_ts": None,
         "prepay_amount": 0,
         "prepay_ts": None,
@@ -366,7 +345,7 @@ async def order_finish(m: types.Message, state: FSMContext):
         }
     })
 
-    save_data(d)
+    await save_data(d)
     await state.clear()
 
     await m.answer(
@@ -377,11 +356,9 @@ async def order_finish(m: types.Message, state: FSMContext):
     )
 
 
-# -------------------- PAYMENT: FULL --------------------
-
 @router.callback_query(F.data.startswith("pay_full:"))
 async def pay_full(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     oid = int(cb.data.split(":")[1])
 
     order = find_order(d, oid)
@@ -389,8 +366,7 @@ async def pay_full(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    # ✅ дозволяємо тільки з pending
-    if order.get("status") != "pending":
+    if order.get("status") in ("paid", "prepay", "in_work", "done"):
         return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
 
     order["payment_method"] = "full"
@@ -399,7 +375,7 @@ async def pay_full(cb: types.CallbackQuery):
 
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
-    save_data(d)
+    await save_data(d)
 
     await cb.message.answer(
         f"✅ Оплачено (симуляція).\n\n"
@@ -413,11 +389,9 @@ async def pay_full(cb: types.CallbackQuery):
     await notify_staff(cb.bot, txt, parse_mode="HTML")
 
 
-# -------------------- PAYMENT: PREPAY 200 (NP COD) --------------------
-
 @router.callback_query(F.data.startswith("pay_prepay:"))
 async def pay_prepay(cb: types.CallbackQuery):
-    d = load_data()
+    d = await load_data()
     oid = int(cb.data.split(":")[1])
 
     order = find_order(d, oid)
@@ -425,12 +399,11 @@ async def pay_prepay(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    # ✅ дозволяємо тільки з pending
-    if order.get("status") != "pending":
+    if order.get("status") in ("paid", "prepay", "in_work", "done"):
         return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
 
     total = float(order.get("total", 0) or 0)
-    prepay = PREPAY_AMOUNT
+    prepay = int(PREPAY_AMOUNT)
     rest = max(0.0, total - prepay)
 
     order["payment_method"] = "np_prepay_200"
@@ -440,7 +413,7 @@ async def pay_prepay(cb: types.CallbackQuery):
 
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
-    save_data(d)
+    await save_data(d)
 
     await cb.message.answer(
         "✅ Передплату зафіксовано (симуляція).\n\n"
@@ -455,21 +428,17 @@ async def pay_prepay(cb: types.CallbackQuery):
     await notify_staff(cb.bot, txt, parse_mode="HTML")
 
 
-# -------------------- ORDERS HISTORY --------------------
-
 @router.message(F.text == "📦 Історія замовлень")
 async def history(m: types.Message):
-    d = load_data()
+    d = await load_data()
     uid = m.from_user.id
-    orders = [o for o in d.get("orders", []) if int(o.get("user_id", -1)) == int(uid)]
+    orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
     if not orders:
         return await m.answer("Історія порожня.")
 
     for o in reversed(orders):
         await m.answer(format_order_text(d, o), parse_mode="HTML")
 
-
-# -------------------- SUPPORT --------------------
 
 @router.message(F.text == "🆘 Підтримка")
 async def support(m: types.Message):
