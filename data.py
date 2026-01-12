@@ -1,4 +1,5 @@
 # data.py
+from text import is_promo_active
 from __future__ import annotations
 
 from typing import Dict, Any, List, Optional
@@ -77,9 +78,18 @@ def find_product(data: Dict[str, Any], pid: int) -> Optional[Dict[str, Any]]:
 
 def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
     total = 0.0
+    now_ts = None  # можна не передавати, is_promo_active сам візьме now
     for pid in cart:
         p = find_product(data, pid)
-        if p:
-            # якщо хочеш враховувати акції — можна тут підключити text.is_promo_active
-            total += float(p.get("price", 0) or 0)
-    return total
+        if not p:
+            continue
+
+        # сумісність зі старими товарами
+        base = float(p.get("base_price", p.get("price", 0)) or 0)
+
+        if is_promo_active(p, now_ts=now_ts):
+            total += float(p.get("promo_price") or 0)
+        else:
+            total += base
+
+    return float(total)
