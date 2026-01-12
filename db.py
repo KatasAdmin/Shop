@@ -29,7 +29,7 @@ engine = create_async_engine(
 )
 
 SessionLocal = async_sessionmaker(
-    bind=engine,
+    engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
@@ -42,10 +42,10 @@ class Base(DeclarativeBase):
 @asynccontextmanager
 async def session_scope() -> AsyncSession:
     """
-    Єдиний правильний спосіб працювати з AsyncSession:
-    - yield session
-    - commit якщо все ок
-    - rollback якщо помилка
+    Контекст сесії з автокомітом.
+    Використання:
+        async with session_scope() as session:
+            ...
     """
     async with SessionLocal() as session:
         try:
