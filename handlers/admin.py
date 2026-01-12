@@ -1,3 +1,4 @@
+# handlers/admin.py
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -6,11 +7,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from data import load_data, save_data, next_product_id, find_product
 from states import AdminFSM, EditProductFSM
 from utils import is_admin, is_staff
-from text import order_premium_text
+from text import order_premium_text, product_card  # ✅ преміум картка товару
 
 router = Router()
 
-NO_SUB = "_"  # системна підкатегорія "Без підкатегорії"
+NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
 
 
 # -------------------- MENUS --------------------
@@ -43,7 +44,7 @@ def subs_inline(cat: str, action: str, include_no_sub: bool = False):
 
     kb = InlineKeyboardBuilder()
     if include_no_sub:
-        kb.button(text="(Без підкатегорії)", callback_data=f"adm:{action}:sub:{cat}:{NO_SUB}")
+        kb.button(text="🧷 Утлет", callback_data=f"adm:{action}:sub:{cat}:{NO_SUB}")
 
     for s in subs.keys():
         if s == NO_SUB:
@@ -75,6 +76,11 @@ def edit_menu_kb(pid: int):
     kb.button(text="✏️ Назва", callback_data=f"adm:edit:name:{pid}")
     kb.button(text="💰 Ціна", callback_data=f"adm:edit:price:{pid}")
     kb.button(text="📝 Опис", callback_data=f"adm:edit:desc:{pid}")
+
+    # ✅ Акції
+    kb.button(text="🏷 Акційна ціна", callback_data=f"adm:edit:promo:{pid}")
+    kb.button(text="🧹 Прибрати акцію", callback_data=f"adm:edit:promo_clear:{pid}")
+
     kb.button(text="⬅️ Назад", callback_data="adm:cancel")
     kb.adjust(1)
     return kb.as_markup()
@@ -477,7 +483,7 @@ async def prod_pick_cat(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(cat=cat)
 
     await state.set_state(AdminFSM.prod_sub)
-    await cb.message.answer("Оберіть підкатегорію або (Без підкатегорії):", reply_markup=subs_inline(cat, "prod_sub", include_no_sub=True))
+    await cb.message.answer("Оберіть підкатегорію або 🧷 Утлет:", reply_markup=subs_inline(cat, "prod_sub", include_no_sub=True))
     await cb.answer()
 
 
@@ -573,10 +579,15 @@ async def prod_done(m: types.Message, state: FSMContext):
     d["categories"].setdefault(cat, {})
     d["categories"][cat].setdefault(sub, [])
 
+    price = float(st["price"])
     product = {
         "id": pid,
         "name": st["name"],
-        "price": float(st["price"]),
+        # ✅ сумісність: і price, і base_price
+        "price": price,
+        "base_price": price,
+        "promo_price": 0,
+        "promo_until_ts": None,
         "description": st.get("description", ""),
         "photos": st.get("photos", []),
     }
@@ -586,7 +597,8 @@ async def prod_done(m: types.Message, state: FSMContext):
 
     await state.clear()
     await m.answer(f"✅ Товар додано: {product['name']} (ID: {pid})", reply_markup=staff_menu(m.from_user.id))
-    
+
+
 # -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
 
 @router.message(F.text == "🛠 Товари")
@@ -614,7 +626,7 @@ async def plist_pick_cat(cb: types.CallbackQuery):
         return await cb.answer()
 
     await cb.message.answer(
-        "Оберіть підкатегорію (або без):",
+        "Оберіть підкатегорію (або 🧷 Утлет):",
         reply_markup=subs_inline(cat, "plist_sub", include_no_sub=True)
     )
     await cb.answer()
@@ -633,7 +645,7 @@ async def plist_pick_sub(cb: types.CallbackQuery):
         return await cb.answer()
 
     for p in items:
-        txt = f"🆔 {p['id']}\n<b>{p['name']}</b>\n💰 {p['price']} ₴\n\n{p.get('description','')}"
+        txt = product_card(p)
         if p.get("photos"):
             await cb.message.answer_photo(
                 p["photos"][0],
@@ -647,7 +659,7 @@ async def plist_pick_sub(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# -------------------- HITS / PROMOS --------------------
+# -------------------- HITS --------------------
 
 @router.callback_query(F.data.startswith("adm:hit:"))
 async def toggle_hit(cb: types.CallbackQuery):
@@ -710,7 +722,6 @@ async def product_del(cb: types.CallbackQuery):
         if deleted:
             break
 
-    # прибираємо з hits
     hits = set(d.get("hits", []))
     hits.discard(pid)
     d["hits"] = list(hits)
@@ -765,12 +776,28 @@ async def edit_field(cb: types.CallbackQuery, state: FSMContext):
     if field == "name":
         await state.set_state(EditProductFSM.name)
         await cb.message.answer("Введіть нову назву:")
+
     elif field == "price":
         await state.set_state(EditProductFSM.price)
-        await cb.message.answer("Введіть нову ціну (число):")
+        await cb.message.answer("Введіть нову базову ціну (число):")
+
     elif field == "desc":
         await state.set_state(EditProductFSM.desc)
         await cb.message.answer("Введіть новий опис (або '-' щоб очистити):")
+
+    elif field == "promo":
+        await state.set_state(EditProductFSM.promo_price)
+        await cb.message.answer(
+            "Введіть акційну ціну (число).\n"
+            "Потім я спитаю дату/час завершення (або '-' щоб без дати)."
+        )
+
+    elif field == "promo_clear":
+        # прибрати акцію одразу, без FSM
+        p["promo_price"] = 0
+        p["promo_until_ts"] = None
+        save_data(d)
+        await cb.message.answer("✅ Акцію прибрано.", reply_markup=staff_menu(cb.from_user.id))
 
     await cb.answer()
 
@@ -817,8 +844,11 @@ async def edit_price(m: types.Message, state: FSMContext):
     except Exception:
         return await m.answer("Введіть число (наприклад 199.99).")
 
-    p["price"] = price
+    # ✅ базова ціна
+    p["base_price"] = price
+    p["price"] = price  # сумісність зі старим кодом
     save_data(d)
+
     await state.clear()
     await m.answer("✅ Ціну оновлено.", reply_markup=staff_menu(m.from_user.id))
 
@@ -842,5 +872,78 @@ async def edit_desc(m: types.Message, state: FSMContext):
 
     p["description"] = desc
     save_data(d)
+
     await state.clear()
     await m.answer("✅ Опис оновлено.", reply_markup=staff_menu(m.from_user.id))
+
+
+# -------- PROMO FLOW --------
+
+@router.message(EditProductFSM.promo_price)
+async def edit_promo_price(m: types.Message, state: FSMContext):
+    d = load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    st = await state.get_data()
+    pid = st.get("pid")
+    p = find_product(d, pid)
+    if not p:
+        await state.clear()
+        return await m.answer("❌ Товар не знайдено.")
+
+    t = (m.text or "").replace(",", ".").strip()
+    try:
+        promo = float(t)
+    except Exception:
+        return await m.answer("Введіть число (наприклад 1499.99).")
+
+    if promo <= 0:
+        return await m.answer("Акційна ціна має бути > 0.")
+
+    p["promo_price"] = promo
+    save_data(d)
+
+    await state.set_state(EditProductFSM.promo_until)
+    await m.answer(
+        "Вкажіть дату завершення акції у форматі:\n"
+        "<b>YYYY-MM-DD HH:MM</b>\n"
+        "Наприклад: 2026-01-20 23:59\n\n"
+        "Або напишіть <b>-</b>, якщо без дати.",
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditProductFSM.promo_until)
+async def edit_promo_until(m: types.Message, state: FSMContext):
+    from datetime import datetime
+    d = load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    st = await state.get_data()
+    pid = st.get("pid")
+    p = find_product(d, pid)
+    if not p:
+        await state.clear()
+        return await m.answer("❌ Товар не знайдено.")
+
+    txt = (m.text or "").strip()
+
+    if txt == "-":
+        p["promo_until_ts"] = None
+        save_data(d)
+        await state.clear()
+        return await m.answer("✅ Акцію встановлено (без дати).", reply_markup=staff_menu(m.from_user.id))
+
+    try:
+        dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
+        ts = int(dt.timestamp())
+    except Exception:
+        return await m.answer("❌ Невірний формат. Приклад: 2026-01-20 23:59 або '-'.")
+
+    p["promo_until_ts"] = ts
+    save_data(d)
+
+    await state.clear()
+    await m.answer("✅ Акцію встановлено.", reply_markup=staff_menu(m.from_user.id))
