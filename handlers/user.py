@@ -6,6 +6,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from aiogram import Bot
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
@@ -357,7 +358,7 @@ async def order_finish(m: types.Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("pay_full:"))
-async def pay_full(cb: types.CallbackQuery):
+async def pay_full(cb: types.CallbackQuery, bot: Bot):
     d = await load_data()
     oid = int(cb.data.split(":")[1])
 
@@ -386,11 +387,11 @@ async def pay_full(cb: types.CallbackQuery):
     await cb.answer()
 
     txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + format_order_text(d, order)
-    await notify_staff(cb.bot, txt, parse_mode="HTML")
+    await notify_staff(bot, txt, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("pay_prepay:"))
-async def pay_prepay(cb: types.CallbackQuery):
+async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
     d = await load_data()
     oid = int(cb.data.split(":")[1])
 
@@ -425,7 +426,7 @@ async def pay_prepay(cb: types.CallbackQuery):
     await cb.answer()
 
     txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + format_order_text(d, order)
-    await notify_staff(cb.bot, txt, parse_mode="HTML")
+    await notify_staff(bot, txt, parse_mode="HTML")
 
 
 @router.message(F.text == "📦 Історія замовлень")
