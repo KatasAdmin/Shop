@@ -87,14 +87,14 @@ def user_favs(d, uid: int):
 
 
 def is_fav(d, uid: int, pid: int) -> bool:
-    favs = set(user_favs(d, uid))
+    favs = set(int(x) for x in user_favs(d, uid))
     return pid in favs
 
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
     # ✅ Преміум-картка товару
     txt = product_card(p)
-    kb = product_kb(p["id"], fav=is_fav(d, uid, p["id"]))
+    kb = product_kb(int(p["id"]), fav=is_fav(d, uid, int(p["id"])))
 
     photos = p.get("photos", [])
     if photos:
@@ -105,7 +105,7 @@ async def send_product(message: types.Message, d, uid: int, p: dict):
 
 def find_order(d, oid: int):
     for o in d.get("orders", []):
-        if o.get("id") == oid:
+        if int(o.get("id", -1)) == int(oid):
             return o
     return None
 
@@ -166,7 +166,7 @@ async def choose_sub(cb: types.CallbackQuery):
 @router.message(F.text == "🔥 Хіти/Акції")
 async def hits(m: types.Message):
     d = load_data()
-    hits_ids = set(d.get("hits", []))
+    hits_ids = set(int(x) for x in d.get("hits", []))
     if not hits_ids:
         return await m.answer("Поки що немає Хітів/Акцій.")
 
@@ -192,7 +192,7 @@ async def fav_toggle(cb: types.CallbackQuery):
     pid = int(pid_str)
 
     favs = user_favs(d, uid)
-    s = set(favs)
+    s = set(int(x) for x in favs)
 
     if mode == "on":
         s.add(pid)
@@ -208,7 +208,7 @@ async def fav_toggle(cb: types.CallbackQuery):
 @router.message(F.text == "⭐ Обране")
 async def show_favs(m: types.Message):
     d = load_data()
-    favs = user_favs(d, m.from_user.id)
+    favs = set(int(x) for x in user_favs(d, m.from_user.id))
     if not favs:
         return await m.answer("Обране порожнє.")
 
@@ -346,7 +346,7 @@ async def order_finish(m: types.Message, state: FSMContext):
     d["orders"].append({
         "id": oid,
         "user_id": m.from_user.id,
-        "items": cart,  # не чистимо кошик тут!
+        "items": list(cart),  # ✅ фіксуємо снапшот кошика
         "total": total,
         "status": "pending",
         "delivery": {
@@ -411,7 +411,7 @@ async def pay(cb: types.CallbackQuery):
 async def history(m: types.Message):
     d = load_data()
     uid = m.from_user.id
-    orders = [o for o in d.get("orders", []) if o.get("user_id") == uid]
+    orders = [o for o in d.get("orders", []) if int(o.get("user_id", -1)) == int(uid)]
     if not orders:
         return await m.answer("Історія порожня.")
 
