@@ -1,12 +1,13 @@
 # handlers/user.py
 import time
+import re
 
-from aiogram import Router, F, types
+from aiogram import Router, F, types, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from aiogram import Bot
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
@@ -17,6 +18,49 @@ router = Router()
 
 NO_SUB = "_"
 
+
+# ===================== PHONE HELPERS =====================
+
+def phone_request_kb() -> ReplyKeyboardMarkup:
+    """
+    Кнопка запиту контакту + кнопка "Відміна".
+    Юзер може натиснути або ввести номер вручну текстом.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📲 Поділитися номером", request_contact=True)],
+            [KeyboardButton(text="❌ Відміна")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def normalize_phone(text: str) -> str:
+    """
+    Нормалізує номер:
+    - залишає тільки цифри
+    - якщо був '+' на початку — повертає '+' + цифри
+    """
+    if not text:
+        return ""
+    t = text.strip()
+    has_plus = t.startswith("+")
+    digits = re.sub(r"\D+", "", t)
+    if has_plus and digits:
+        return "+" + digits
+    return digits
+
+
+def is_valid_phone(text: str) -> bool:
+    """
+    Мінімум 10 цифр.
+    """
+    digits = re.sub(r"\D+", "", text or "")
+    return len(digits) >= 10
+
+
+# ===================== MENUS =====================
 
 def main_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
@@ -74,6 +118,8 @@ def payment_choice_kb(oid: int, total: float):
     return kb.as_markup()
 
 
+# ===================== FAVS =====================
+
 def user_favs(d, uid: int):
     d.setdefault("favorites", {})
     return d["favorites"].setdefault(str(uid), [])
@@ -83,6 +129,8 @@ def is_fav(d, uid: int, pid: int) -> bool:
     favs = set(int(x) for x in user_favs(d, uid))
     return pid in favs
 
+
+# ===================== SEND PRODUCT =====================
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
     txt = product_card(p)
@@ -102,11 +150,21 @@ def find_order(d, oid: int):
     return None
 
 
+# ===================== START / CANCEL =====================
+
 @router.message(CommandStart())
 async def start(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("🏠 Меню", reply_markup=main_menu())
 
+
+@router.message(F.text == "❌ Відміна")
+async def user_cancel(m: types.Message, state: FSMContext):
+    await state.clear()
+    await m.answer("Скасовано. 🏠", reply_markup=main_menu())
+
+
+# ===================== CATALOG =====================
 
 @router.message(F.text == "🛍 Каталог")
 async def catalog(m: types.Message):
@@ -148,6 +206,8 @@ async def choose_sub(cb: types.CallbackQuery):
 
     await cb.answer()
 
+
+# ===================== HITS / FAVS =====================
 
 @router.message(F.text == "🔥 Хіти/Акції")
 async def hits(m: types.Message):
@@ -207,6 +267,8 @@ async def show_favs(m: types.Message):
         await m.answer("Обране є, але товари не знайдені.")
 
 
+# ===================== CART =====================
+
 @router.callback_query(F.data.startswith("add:"))
 async def add_cart(cb: types.CallbackQuery):
     d = await load_data()
@@ -249,6 +311,8 @@ async def clear_cart(cb: types.CallbackQuery):
     await cb.answer("Очищено 🗑")
 
 
+# ===================== CHECKOUT FLOW =====================
+
 @router.callback_query(F.data == "checkout")
 async def checkout(cb: types.CallbackQuery, state: FSMContext):
     d = await load_data()
@@ -270,17 +334,47 @@ async def order_name(m: types.Message, state: FSMContext):
         return await m.answer("Введіть ім’я текстом.")
     await state.update_data(name=name)
     await state.set_state(OrderFSM.phone)
-    await m.answer("📞 Введіть номер телефону:")
+    await m.answer(
+        "📞 Надішліть номер телефону кнопкою або введіть вручну (мінімум 10 цифр):",
+        reply_markup=phone_request_kb()
+    )
 
 
 @router.message(OrderFSM.phone)
 async def order_phone(m: types.Message, state: FSMContext):
-    phone = (m.text or "").strip()
-    if not phone:
-        return await m.answer("Введіть номер телефону.")
-    await state.update_data(phone=phone)
+    """
+    Приймає телефон двома шляхами:
+    1) contact (кнопка "Поділитися номером")
+    2) ручний текст
+    Валідація: мінімум 10 цифр.
+    """
+    phone_raw = ""
+
+    if m.contact and m.contact.phone_number:
+        phone_raw = m.contact.phone_number
+
+    if not phone_raw:
+        phone_raw = (m.text or "").strip()
+
+    if not phone_raw:
+        return await m.answer(
+            "📞 Надішліть номер телефону кнопкою або введіть вручну.\n"
+            "Мінімум 10 цифр.",
+            reply_markup=phone_request_kb()
+        )
+
+    if not is_valid_phone(phone_raw):
+        return await m.answer(
+            "❌ Номер виглядає некоректно.\n"
+            "Введіть ще раз (мінімум 10 цифр) або натисніть кнопку 👇",
+            reply_markup=phone_request_kb()
+        )
+
+    phone_norm = normalize_phone(phone_raw)
+
+    await state.update_data(phone=phone_norm)
     await state.set_state(OrderFSM.city)
-    await m.answer("🏙 Введіть місто:")
+    await m.answer("🏙 Введіть місто:", reply_markup=main_menu())
 
 
 @router.message(OrderFSM.city)
@@ -357,6 +451,8 @@ async def order_finish(m: types.Message, state: FSMContext):
     )
 
 
+# ===================== PAY (SIMULATION) =====================
+
 @router.callback_query(F.data.startswith("pay_full:"))
 async def pay_full(cb: types.CallbackQuery, bot: Bot):
     d = await load_data()
@@ -379,9 +475,9 @@ async def pay_full(cb: types.CallbackQuery, bot: Bot):
     await save_data(d)
 
     await cb.message.answer(
-        f"✅ Оплачено (симуляція).\n\n"
+        "✅ Оплачено (симуляція).\n\n"
         f"Дякуємо! Замовлення #{oid} прийнято.\n"
-        f"Менеджер зв’яжеться з вами найближчим часом.",
+        "Менеджер зв’яжеться з вами найближчим часом.",
         reply_markup=main_menu()
     )
     await cb.answer()
@@ -428,6 +524,8 @@ async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
     txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + format_order_text(d, order)
     await notify_staff(bot, txt, parse_mode="HTML")
 
+
+# ===================== HISTORY / SUPPORT =====================
 
 @router.message(F.text == "📦 Історія замовлень")
 async def history(m: types.Message):
