@@ -1,5 +1,5 @@
 from db import engine, Base
-import models
+import models  # важливо: щоб моделі зареєструвались у Base.metadata
 
 async def init_db():
     async with engine.begin() as conn:
