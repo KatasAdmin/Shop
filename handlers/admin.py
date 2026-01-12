@@ -46,6 +46,20 @@ def _ensure_product_schema(p: dict) -> None:
         p["promo_until_ts"] = None
 
 
+def _order_products(d: dict, o: dict) -> list[dict]:
+    """
+    Повертає список товарів замовлення (з нормалізацією полів).
+    Потрібно для order_premium_text, щоб суми/акції/назви завжди були коректні.
+    """
+    products: list[dict] = []
+    for pid in (o.get("items", []) or []):
+        p = find_product(d, int(pid))
+        if p:
+            _ensure_product_schema(p)
+            products.append(p)
+    return products
+    
+
 # -------------------- MENUS --------------------
 
 def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
@@ -133,31 +147,31 @@ async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
-def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup | None:
+def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
 
     # взяти в роботу
     if status in ("paid", "prepay"):
         kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
 
-    # фініш “всередині” (залишимо як було)
-    if status in ("paid", "prepay", "in_work"):
+    # завершити (як “закрито”)
+    if status in ("paid", "prepay", "in_work", "shipped"):
         kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
 
-    # ✅ логістика/бух-статуси (для себе)
+    # логістика
     if status in ("paid", "prepay", "in_work", "shipped"):
         kb.button(text="🚚 Відправлено", callback_data=f"adm:order:shipped:{oid}")
 
-    if status in ("shipped",):
+    if status == "shipped":
         kb.button(text="✅ Забрав (продано)", callback_data=f"adm:order:picked:{oid}")
         kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
         kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
 
-    # історія покупця (працює завжди)
+    # історія покупця
     kb.button(text="📜 Історія покупця", callback_data=f"adm:order:history:{oid}")
 
     kb.adjust(1)
-    return kb.as_markup() if kb.buttons else None
+    return kb.as_markup()
 
 
 # -------------------- COMMON --------------------
@@ -203,13 +217,7 @@ async def orders_paid(m: types.Message):
         return await m.answer("Немає нових оплачених/передплачених замовлень.")
 
     for o in paid:
-        products = []
-        for pid in (o.get("items", []) or []):
-            p = find_product(d, int(pid))
-            if p:
-                _ensure_product_schema(p)
-                products.append(p)
-
+        products = _order_products(d, o)
         await m.answer(
             order_premium_text(d, o, products),
             parse_mode="HTML",
@@ -227,14 +235,8 @@ async def orders_all(m: types.Message):
     if not orders:
         return await m.answer("Замовлень ще немає.")
 
-    for o in reversed(orders):
-        products = []
-        for pid in (o.get("items", []) or []):
-            p = find_product(d, int(pid))
-            if p:
-                _ensure_product_schema(p)
-                products.append(p)
-
+        for o in reversed(orders):
+        products = _order_products(d, o)
         await m.answer(
             order_premium_text(d, o, products),
             parse_mode="HTML",
@@ -256,13 +258,22 @@ async def order_change_status(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    # ----------------- стандартні -----------------
+    def _reply_updated(prefix_text: str):
+        # показуємо оновлену карточку замовлення з кнопками
+        products = _order_products(d, order)
+        return cb.message.answer(
+            prefix_text + "\n\n" + order_premium_text(d, order, products),
+            parse_mode="HTML",
+            reply_markup=order_actions_kb(oid, str(order.get("status", "")))
+        )
+
+    # ---- стандартні ----
     if action == "in_work":
         if order.get("status") not in ("paid", "prepay"):
             return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
         order["status"] = "in_work"
         await save_data(d)
-        await cb.message.answer(f"🟡 Замовлення #{oid} взято в роботу.")
+        await _reply_updated(f"🟡 Замовлення #{oid} взято в роботу.")
         return await cb.answer()
 
     if action == "done":
@@ -270,32 +281,32 @@ async def order_change_status(cb: types.CallbackQuery):
             return await cb.answer("Неможливо завершити", show_alert=True)
         order["status"] = "done"
         await save_data(d)
-        await cb.message.answer(f"✅ Замовлення #{oid} завершено.")
+        await _reply_updated(f"✅ Замовлення #{oid} завершено.")
         return await cb.answer()
 
-    # ----------------- логістика -----------------
+    # ---- логістика ----
     if action == "shipped":
         if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
         order["status"] = "shipped"
         await save_data(d)
-        await cb.message.answer(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
+        await _reply_updated(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
         return await cb.answer()
 
     if action == "picked":
-        if order.get("status") not in ("shipped",):
+        if order.get("status") != "shipped":
             return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
         order["status"] = "picked"
         await save_data(d)
-        await cb.message.answer(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
+        await _reply_updated(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
         return await cb.answer()
 
     if action == "not_picked":
-        if order.get("status") not in ("shipped",):
+        if order.get("status") != "shipped":
             return await cb.answer("Це доречно тільки після 'Відправлено'", show_alert=True)
         order["status"] = "not_picked"
         await save_data(d)
-        await cb.message.answer(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
+        await _reply_updated(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
         return await cb.answer()
 
     if action == "returned":
@@ -303,10 +314,10 @@ async def order_change_status(cb: types.CallbackQuery):
             return await cb.answer("Повернення ставимо після логістики", show_alert=True)
         order["status"] = "returned"
         await save_data(d)
-        await cb.message.answer(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
+        await _reply_updated(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
         return await cb.answer()
 
-    # ----------------- історія покупця -----------------
+    # ---- історія покупця ----
     if action == "history":
         uid = int(order.get("user_id", 0) or 0)
         if not uid:
@@ -322,15 +333,15 @@ async def order_change_status(cb: types.CallbackQuery):
         await cb.message.answer(user_link + "\n<b>📜 Історія замовлень покупця:</b>", parse_mode="HTML")
 
         for o in reversed(user_orders):
+            products = _order_products(d, o)
             await cb.message.answer(
-                order_premium_text(d, o, []),
+                order_premium_text(d, o, products),
                 parse_mode="HTML",
                 reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
             )
         return await cb.answer()
 
-    return await cb.answer()
-
+    return await cb.answer("Невідома дія", show_alert=True)
 
 # -------------------- MANAGERS (ADMIN ONLY) --------------------
 
