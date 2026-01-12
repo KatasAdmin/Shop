@@ -1,5 +1,6 @@
 # handlers/user.py
 from aiogram import Router, F, types
+from text import product_card, cart_summary
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
