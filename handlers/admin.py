@@ -235,7 +235,7 @@ async def orders_all(m: types.Message):
     if not orders:
         return await m.answer("Замовлень ще немає.")
 
-        for o in reversed(orders):
+    for o in reversed(orders):
         products = _order_products(d, o)
         await m.answer(
             order_premium_text(d, o, products),
