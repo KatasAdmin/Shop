@@ -1,4 +1,6 @@
 # handlers/user.py
+import time
+
 from aiogram import Router, F, types
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -7,12 +9,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
-
 from text import product_card, cart_summary
 
 router = Router()
 
 NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
+PREPAY_AMOUNT = 200  # ✅ передплата для наложки
 
 
 # -------------------- USER MENU --------------------
@@ -40,8 +42,6 @@ def catalog_kb(cats):
 
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
-
-    # ✅ NO_SUB показуємо як "🧷 Утлет"
     kb.button(text="🧷 Утлет", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
@@ -72,9 +72,15 @@ def cart_kb(total: float):
     return kb.as_markup()
 
 
-def pay_kb(oid: int):
+def payment_choice_kb(oid: int, total: float):
+    """
+    ✅ Вибір способу оплати:
+    - повна оплата
+    - передплата 200 (наложка НП)
+    """
     kb = InlineKeyboardBuilder()
-    kb.button(text="💳 Оплатити", callback_data=f"pay:{oid}")
+    kb.button(text=f"💳 Повна оплата ({total:.2f} ₴)", callback_data=f"pay_full:{oid}")
+    kb.button(text=f"💵 Передплата {PREPAY_AMOUNT} ₴ (НП/наложка)", callback_data=f"pay_prepay:{oid}")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -92,7 +98,6 @@ def is_fav(d, uid: int, pid: int) -> bool:
 
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
-    # ✅ Преміум-картка товару
     txt = product_card(p)
     kb = product_kb(int(p["id"]), fav=is_fav(d, uid, int(p["id"])))
 
@@ -192,16 +197,16 @@ async def fav_toggle(cb: types.CallbackQuery):
     pid = int(pid_str)
 
     favs = user_favs(d, uid)
-    s = set(int(x) for x in favs)
+    sset = set(int(x) for x in favs)
 
     if mode == "on":
-        s.add(pid)
+        sset.add(pid)
         await cb.answer("⭐ Додано в обране")
     else:
-        s.discard(pid)
+        sset.discard(pid)
         await cb.answer("❌ Прибрано з обраного")
 
-    d["favorites"][str(uid)] = list(s)
+    d["favorites"][str(uid)] = list(sset)
     save_data(d)
 
 
@@ -252,7 +257,7 @@ async def show_cart(m: types.Message):
         if p:
             items.append(p)
 
-    total = cart_total(d, cart)  # для кнопки "Оформити"
+    total = cart_total(d, cart)
     txt = cart_summary(d, items)
 
     await m.answer(txt, parse_mode="HTML", reply_markup=cart_kb(total))
@@ -346,9 +351,19 @@ async def order_finish(m: types.Message, state: FSMContext):
     d["orders"].append({
         "id": oid,
         "user_id": m.from_user.id,
-        "items": list(cart),  # ✅ фіксуємо снапшот кошика
-        "total": total,
+        "items": list(cart),
+        "total": float(total),
         "status": "pending",
+
+        # ✅ для обліку
+        "created_ts": int(time.time()),
+
+        # ✅ оплата
+        "payment_method": None,    # "full" | "np_prepay_200"
+        "paid_ts": None,           # для full
+        "prepay_amount": 0,        # для наложки
+        "prepay_ts": None,         # час передплати
+
         "delivery": {
             "name": st.get("name", ""),
             "phone": st.get("phone", ""),
@@ -364,15 +379,15 @@ async def order_finish(m: types.Message, state: FSMContext):
     await m.answer(
         f"✅ Замовлення створено #{oid}\n"
         f"Сума: {total:.2f} ₴\n\n"
-        f"Натисніть «Оплатити» (симуляція).",
-        reply_markup=pay_kb(oid)
+        f"Оберіть спосіб оплати:",
+        reply_markup=payment_choice_kb(oid, total)
     )
 
 
-# -------------------- PAY (SIMULATION) --------------------
+# -------------------- PAYMENT: FULL --------------------
 
-@router.callback_query(F.data.startswith("pay:"))
-async def pay(cb: types.CallbackQuery):
+@router.callback_query(F.data.startswith("pay_full:"))
+async def pay_full(cb: types.CallbackQuery):
     d = load_data()
     oid = int(cb.data.split(":")[1])
 
@@ -381,14 +396,15 @@ async def pay(cb: types.CallbackQuery):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    if order.get("status") == "paid":
-        return await cb.answer("Вже оплачено ✅", show_alert=True)
+    if order.get("status") in ("paid", "prepay", "in_work", "done"):
+        return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
 
-    if order.get("status") != "pending":
-        return await cb.answer("Це замовлення вже обробляється.", show_alert=True)
-
+    # ✅ симуляція повної оплати
+    order["payment_method"] = "full"
     order["status"] = "paid"
+    order["paid_ts"] = int(time.time())
 
+    # чистимо кошик
     d.setdefault("carts", {})
     d["carts"][str(order["user_id"])] = []
     save_data(d)
@@ -402,6 +418,49 @@ async def pay(cb: types.CallbackQuery):
     await cb.answer()
 
     txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + format_order_text(d, order)
+    await notify_staff(cb.bot, txt, parse_mode="HTML")
+
+
+# -------------------- PAYMENT: PREPAY 200 (NP COD) --------------------
+
+@router.callback_query(F.data.startswith("pay_prepay:"))
+async def pay_prepay(cb: types.CallbackQuery):
+    d = load_data()
+    oid = int(cb.data.split(":")[1])
+
+    order = find_order(d, oid)
+    if not order:
+        await cb.message.answer("❌ Замовлення не знайдено.")
+        return await cb.answer()
+
+    if order.get("status") in ("paid", "prepay", "in_work", "done"):
+        return await cb.answer("Це замовлення вже опрацьовується.", show_alert=True)
+
+    total = float(order.get("total", 0) or 0)
+    prepay = PREPAY_AMOUNT
+    rest = max(0.0, total - prepay)
+
+    # ✅ симуляція передплати
+    order["payment_method"] = "np_prepay_200"
+    order["status"] = "prepay"
+    order["prepay_amount"] = prepay
+    order["prepay_ts"] = int(time.time())
+
+    # чистимо кошик
+    d.setdefault("carts", {})
+    d["carts"][str(order["user_id"])] = []
+    save_data(d)
+
+    await cb.message.answer(
+        "✅ Передплату зафіксовано (симуляція).\n\n"
+        f"Передплата: {prepay} ₴\n"
+        f"Залишок до сплати на НП: {rest:.2f} ₴\n\n"
+        f"Замовлення #{oid} прийнято. Менеджер зв’яжеться з вами.",
+        reply_markup=main_menu()
+    )
+    await cb.answer()
+
+    txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + format_order_text(d, order)
     await notify_staff(cb.bot, txt, parse_mode="HTML")
 
 
