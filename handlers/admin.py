@@ -88,7 +88,7 @@ def edit_menu_kb(pid: int):
 
 def product_actions_kb(pid: int):
     d = load_data()
-    hits = set(d.get("hits", []))
+    hits = set(int(x) for x in d.get("hits", []))
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Редагувати", callback_data=f"adm:editmenu:{pid}")
