@@ -22,6 +22,10 @@ class EditProductFSM(StatesGroup):
     price = State()
     desc = State()
 
+    # ✅ для акцій
+    promo_price = State()
+    promo_until = State()
+
 
 class OrderFSM(StatesGroup):
     name = State()
