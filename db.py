@@ -29,7 +29,7 @@ engine = create_async_engine(
 )
 
 SessionLocal = async_sessionmaker(
-    engine,
+    bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
@@ -41,12 +41,16 @@ class Base(DeclarativeBase):
 
 @asynccontextmanager
 async def session_scope() -> AsyncSession:
-    session = SessionLocal()
-    try:
-        yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    """
+    Єдиний правильний спосіб працювати з AsyncSession:
+    - yield session
+    - commit якщо все ок
+    - rollback якщо помилка
+    """
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
