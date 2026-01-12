@@ -1,6 +1,8 @@
+# db.py
 from __future__ import annotations
 
-import os
+from contextlib import asynccontextmanager
+
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -35,3 +37,16 @@ SessionLocal = async_sessionmaker(
 
 class Base(DeclarativeBase):
     pass
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncSession:
+    session = SessionLocal()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
