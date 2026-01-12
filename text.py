@@ -1,6 +1,5 @@
 # text.py
 from __future__ import annotations
-from text import product_card, cart_summary
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
