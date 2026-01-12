@@ -374,6 +374,7 @@ async def order_phone(m: types.Message, state: FSMContext):
 
     await state.update_data(phone=phone_norm)
     await state.set_state(OrderFSM.city)
+    # повертаємо звичайне меню, щоб не висіла клавіатура "поділитися контактом"
     await m.answer("🏙 Введіть місто:", reply_markup=main_menu())
 
 
@@ -483,8 +484,8 @@ async def pay_full(cb: types.CallbackQuery, bot: Bot):
     await cb.answer()
 
     user_link = f'<a href="tg://user?id={order["user_id"]}">👤 Покупець</a>'
-txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + user_link + "\n\n" + format_order_text(d, order)
-await notify_staff(bot, txt, parse_mode="HTML")
+    txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + user_link + "\n\n" + format_order_text(d, order)
+    await notify_staff(bot, txt, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("pay_prepay:"))
@@ -523,8 +524,8 @@ async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
     await cb.answer()
 
     user_link = f'<a href="tg://user?id={order["user_id"]}">👤 Покупець</a>'
-txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + user_link + "\n\n" + format_order_text(d, order)
-await notify_staff(bot, txt, parse_mode="HTML")
+    txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + user_link + "\n\n" + format_order_text(d, order)
+    await notify_staff(bot, txt, parse_mode="HTML")
 
 
 # ===================== HISTORY / SUPPORT =====================
