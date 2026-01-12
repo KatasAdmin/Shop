@@ -482,8 +482,9 @@ async def pay_full(cb: types.CallbackQuery, bot: Bot):
     )
     await cb.answer()
 
-    txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + format_order_text(d, order)
-    await notify_staff(bot, txt, parse_mode="HTML")
+    user_link = f'<a href="tg://user?id={order["user_id"]}">👤 Покупець</a>'
+txt = "🆕 НОВЕ ОПЛАЧЕНЕ ЗАМОВЛЕННЯ\n\n" + user_link + "\n\n" + format_order_text(d, order)
+await notify_staff(bot, txt, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("pay_prepay:"))
@@ -521,8 +522,9 @@ async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
     )
     await cb.answer()
 
-    txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + format_order_text(d, order)
-    await notify_staff(bot, txt, parse_mode="HTML")
+    user_link = f'<a href="tg://user?id={order["user_id"]}">👤 Покупець</a>'
+txt = "🆕 НОВЕ ЗАМОВЛЕННЯ (ПЕРЕДПЛАТА / НП)\n\n" + user_link + "\n\n" + format_order_text(d, order)
+await notify_staff(bot, txt, parse_mode="HTML")
 
 
 # ===================== HISTORY / SUPPORT =====================
