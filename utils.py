@@ -13,7 +13,7 @@ def is_admin(uid: int) -> bool:
 
 
 def is_staff(data: Dict[str, Any], uid: int) -> bool:
-    return uid in (data.get("managers", []) or []) or is_admin(uid)
+    return uid in data.get("managers", []) or is_admin(uid)
 
 
 async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs):
@@ -34,11 +34,13 @@ async def notify_staff(bot: Bot, text: str, **kwargs):
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     products: List[Dict[str, Any]] = []
+
     for pid in order.get("items", []) or []:
         try:
             pid_int = int(pid)
         except Exception:
             continue
+
         p = find_product(data, pid_int)
         if p:
             products.append(p)
