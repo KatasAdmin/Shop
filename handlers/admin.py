@@ -117,6 +117,21 @@ def edit_menu_kb(pid: int) -> types.InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
+async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
+    d = await load_data()
+    hits = _hits_set(d)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Редагувати", callback_data=f"adm:editmenu:{pid}")
+    kb.button(text="🗑 Видалити", callback_data=f"adm:delask:{pid}")
+
+    if pid in hits:
+        kb.button(text="❌ Прибрати з Хітів", callback_data=f"adm:hit:off:{pid}")
+    else:
+        kb.button(text="🔥 Додати в Хіти", callback_data=f"adm:hit:on:{pid}")
+
+    kb.adjust(1)
+    return kb.as_markup()
 
 def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup | None:
     kb = InlineKeyboardBuilder()
@@ -685,13 +700,13 @@ async def plist_pick_sub(cb: types.CallbackQuery):
                 p["photos"][0],
                 caption=txt,
                 parse_mode="HTML",
-                reply_markup=product_actions_kb(int(p["id"]))
+                reply_markup=await product_actions_kb(int(p["id"]))
             )
         else:
             await cb.message.answer(
                 txt,
                 parse_mode="HTML",
-                reply_markup=product_actions_kb(int(p["id"]))
+                reply_markup=await product_actions_kb(int(p["id"]))
             )
 
     await cb.answer()
