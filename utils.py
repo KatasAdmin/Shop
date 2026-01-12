@@ -1,12 +1,11 @@
 # utils.py
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from aiogram import Bot
 
 from config import ADMIN_ID
 from data import load_data, find_product
 
-# преміум форматування (файл text.py лежить у корені)
 from text import order_premium_text
 
 
@@ -35,31 +34,34 @@ async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs):
 
 # ===================== NOTIFY STAFF =====================
 
-async def notify_staff(bot: Bot, text: str):
+async def notify_staff(bot: Bot, text: str, **kwargs):
     """
-    Відправка повідомлення всім менеджерам і адміну
+    Відправка повідомлення всім менеджерам і адміну.
+    Підтримує parse_mode та інші kwargs.
     """
     data = load_data()
-    recipients = set(data.get("managers", []))
-    recipients.add(ADMIN_ID)
+    recipients = set(int(x) for x in data.get("managers", []) if str(x).isdigit())
+    recipients.add(int(ADMIN_ID))
 
     for uid in recipients:
-        await safe_send(bot, uid, text)
+        await safe_send(bot, uid, text, **kwargs)
 
 
 # ===================== ORDER FORMATTING =====================
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     """
-    Преміум-текст замовлення для менеджера/адміна.
-    Повертає HTML-рядок -> при відправці став parse_mode="HTML"
+    Преміум-текст замовлення для менеджера/адміна (HTML).
     """
     items: List[Dict[str, Any]] = []
     for pid in order.get("items", []):
-        p = find_product(data, pid)
+        try:
+            pid_int = int(pid)
+        except Exception:
+            continue
+        p = find_product(data, pid_int)
         if p:
             items.append(p)
 
-    # order_premium_text(order, items) — якщо твоя функція саме така.
-    # Якщо в text.py вона називається order_card(...) — скажи, підлаштую.
-    return order_premium_text(order, items)
+    # ✅ Правильна сигнатура з text.py: (data, order, products)
+    return order_premium_text(data, order, items)
