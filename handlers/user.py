@@ -17,16 +17,11 @@ from config import PREPAY_AMOUNT
 router = Router()
 
 NO_SUB = "_"
-PAGE_SIZE = 1
 
 
 # ===================== PHONE HELPERS =====================
 
 def phone_request_kb() -> ReplyKeyboardMarkup:
-    """
-    Кнопка запиту контакту + кнопка "Відміна".
-    Юзер може натиснути або ввести номер вручну текстом.
-    """
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📲 Поділитися номером", request_contact=True)],
@@ -38,11 +33,6 @@ def phone_request_kb() -> ReplyKeyboardMarkup:
 
 
 def normalize_phone(text: str) -> str:
-    """
-    Нормалізує номер:
-    - залишає тільки цифри
-    - якщо був '+' на початку — повертає '+' + цифри
-    """
     if not text:
         return ""
     t = text.strip()
@@ -54,9 +44,6 @@ def normalize_phone(text: str) -> str:
 
 
 def is_valid_phone(text: str) -> bool:
-    """
-    Мінімум 10 цифр.
-    """
     digits = re.sub(r"\D+", "", text or "")
     return len(digits) >= 10
 
@@ -78,38 +65,32 @@ def catalog_kb(cats):
     kb = InlineKeyboardBuilder()
     for c in cats:
         kb.button(text=str(c), callback_data=f"cat:{c}")
-    kb.adjust(1)  # ✅ тепер категорії йдуть стовпчиком
+    kb.adjust(1)  # ✅ категорії стовпчиком
     return kb.as_markup()
 
 
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # ⬅️ назад до категорій
-    kb.button(text="⬅️ Назад", callback_data="catalog:back")
-
-    # підкатегорії
-    kb.button(text="Утлет 🧷", callback_data=f"sub:{cat}:{NO_SUB}")
+    kb.button(text="⬅️ Назад", callback_data="catalog:back")          # назад до категорій
+    kb.button(text="Утлет 🧷", callback_data=f"sub:{cat}:{NO_SUB}")    # утлет
 
     for s in subs:
         if s == NO_SUB:
             continue
         kb.button(text=str(s), callback_data=f"sub:{cat}:{s}")
 
-    kb.adjust(1)  # ✅ все стовпчиком
-    return kb.as_markup()
-
-def back_to_subcats_kb(cat: str):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data=f"sub_back:{cat}")
-    kb.adjust(1)
+    kb.adjust(1)  # ✅ підкатегорії стовпчиком
     return kb.as_markup()
 
 
 def product_kb(pid: int, fav: bool = False):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
-    kb.button(text=("❌ З обраного" if fav else "⭐ В обране"), callback_data=f"fav:{'off' if fav else 'on'}:{pid}")
+    kb.button(
+        text=("❌ З обраного" if fav else "⭐ В обране"),
+        callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
+    )
     kb.adjust(2)
     return kb.as_markup()
 
@@ -142,13 +123,13 @@ def is_fav(d, uid: int, pid: int) -> bool:
     return pid in favs
 
 
-# ===================== SEND PRODUCT =====================
+# ===================== SEND PRODUCT (simple) =====================
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
     txt = product_card(p)
     kb = product_kb(int(p["id"]), fav=is_fav(d, uid, int(p["id"])))
 
-    photos = p.get("photos", [])
+    photos = p.get("photos", []) or []
     if photos:
         await message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
     else:
@@ -160,6 +141,93 @@ def find_order(d, oid: int):
         if int(o.get("id", -1)) == int(oid):
             return o
     return None
+
+
+# ===================== PAGINATION (1 product per page) =====================
+
+def product_page_kb(cat: str, sub: str, i: int, total: int, pid: int, fav: bool):
+    kb = InlineKeyboardBuilder()
+
+    kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
+    kb.button(
+        text=("❌ З обраного" if fav else "⭐ В обране"),
+        callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
+    )
+
+    prev_i = max(0, i - 1)
+    next_i = min(total - 1, i + 1)
+    kb.button(text="⬅️", callback_data=f"page:{cat}:{sub}:{prev_i}")
+    kb.button(text=f"{i+1}/{total}", callback_data="noop")
+    kb.button(text="➡️", callback_data=f"page:{cat}:{sub}:{next_i}")
+
+    kb.button(text="⬅️ До підкатегорій", callback_data=f"sub_back:{cat}")
+    kb.button(text="⬅️ До категорій", callback_data="catalog:back")
+
+    kb.adjust(2, 3, 2)
+    return kb.as_markup()
+
+
+async def send_product_page(message: types.Message, d, uid: int, cat: str, sub: str, i: int):
+    items = d.get("categories", {}).get(cat, {}).get(sub, []) or []
+    total = len(items)
+    if total == 0:
+        return await message.answer("Товарів немає.")
+
+    i = max(0, min(i, total - 1))
+    p = items[i]
+
+    txt = product_card(p)
+    pid = int(p["id"])
+    fav = is_fav(d, uid, pid)
+    kb = product_page_kb(cat, sub, i, total, pid, fav)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        await message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+async def show_product_page(cb: types.CallbackQuery, cat: str, sub: str, i: int):
+    d = await load_data()
+    items = d.get("categories", {}).get(cat, {}).get(sub, []) or []
+    total = len(items)
+    if total == 0:
+        await cb.message.answer("Товарів немає.")
+        return
+
+    i = max(0, min(i, total - 1))
+    p = items[i]
+
+    txt = product_card(p)
+    pid = int(p["id"])
+    fav = is_fav(d, cb.from_user.id, pid)
+    kb = product_page_kb(cat, sub, i, total, pid, fav)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=kb)
+        except Exception:
+            await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("page:"))
+async def page_nav(cb: types.CallbackQuery):
+    _, cat, sub, i_str = cb.data.split(":", 3)
+    await show_product_page(cb, cat, sub, int(i_str))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def noop(cb: types.CallbackQuery):
+    await cb.answer()
 
 
 # ===================== START / CANCEL =====================
@@ -186,11 +254,39 @@ async def catalog(m: types.Message):
     await m.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
 
 
+@router.callback_query(F.data == "catalog:back")
+async def catalog_back(cb: types.CallbackQuery):
+    d = await load_data()
+    if not d.get("categories"):
+        await cb.message.answer("Каталог порожній")
+        return await cb.answer()
+    await cb.message.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("cat:"))
 async def choose_cat(cb: types.CallbackQuery):
     d = await load_data()
     cat = cb.data.split(":", 1)[1]
-    subs = d["categories"].get(cat, {})
+    subs = d.get("categories", {}).get(cat, {}) or {}
+    if not subs:
+        await cb.message.answer("У цій категорії поки немає товарів.")
+        return await cb.answer()
+
+    await cb.message.answer(
+        f"<b>{cat}</b>\nОберіть підкатегорію:",
+        parse_mode="HTML",
+        reply_markup=subcat_kb(cat, subs.keys())
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sub_back:"))
+async def sub_back(cb: types.CallbackQuery):
+    d = await load_data()
+    cat = cb.data.split(":", 1)[1]
+
+    subs = d.get("categories", {}).get(cat, {}) or {}
     if not subs:
         await cb.message.answer("У цій категорії поки немає товарів.")
         return await cb.answer()
@@ -213,99 +309,7 @@ async def choose_sub(cb: types.CallbackQuery):
         await cb.message.answer("Товарів немає.")
         return await cb.answer()
 
-    # показуємо перший товар (індекс 0)
-    await show_product_page(cb, cat, sub, 0)
-    await cb.answer()
-
-def product_page_kb(cat: str, sub: str, i: int, total: int, pid: int, fav: bool):
-    kb = InlineKeyboardBuilder()
-
-    # товарні кнопки
-    kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
-    kb.button(
-        text=("❌ З обраного" if fav else "⭐ В обране"),
-        callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
-    )
-
-    # навігація
-    kb.button(text="⬅️", callback_data=f"page:{cat}:{sub}:{max(0, i-1)}")
-    kb.button(text=f"{i+1}/{total}", callback_data="noop")
-    kb.button(text="➡️", callback_data=f"page:{cat}:{sub}:{min(total-1, i+1)}")
-
-    # назад
-    kb.button(text="⬅️ До підкатегорій", callback_data=f"sub_back:{cat}")
-    kb.button(text="⬅️ До категорій", callback_data="catalog:back")
-
-    kb.adjust(2, 3, 2)
-    return kb.as_markup()
-
-async def show_product_page(cb: types.CallbackQuery, cat: str, sub: str, i: int):
-    d = await load_data()
-    items = d.get("categories", {}).get(cat, {}).get(sub, []) or []
-    total = len(items)
-    if total == 0:
-        await cb.message.answer("Товарів немає.")
-        return
-
-    # фікс індекса
-    i = max(0, min(i, total - 1))
-    p = items[i]
-
-    txt = product_card(p)
-    pid = int(p["id"])
-    fav = is_fav(d, cb.from_user.id, pid)
-    kb = product_page_kb(cat, sub, i, total, pid, fav)
-
-    photos = p.get("photos", []) or []
-    if photos:
-        # оновлюємо медіа+кнопки в тому ж повідомленні
-        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
-        try:
-            await cb.message.edit_media(media=media, reply_markup=kb)
-        except Exception:
-            # якщо не вийшло (наприклад, попереднє повідомлення не фото) — надсилаємо нове
-            await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
-    else:
-        try:
-            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb)
-        except Exception:
-            await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
-
-@router.callback_query(F.data.startswith("page:"))
-async def page_nav(cb: types.CallbackQuery):
-    _, cat, sub, i_str = cb.data.split(":", 3)
-    await show_product_page(cb, cat, sub, int(i_str))
-    await cb.answer()
-
-@router.callback_query(F.data == "noop")
-async def noop(cb: types.CallbackQuery):
-    await cb.answer()
-
-@router.callback_query(F.data == "catalog:back")
-async def catalog_back(cb: types.CallbackQuery):
-    d = await load_data()
-    if not d.get("categories"):
-        await cb.message.answer("Каталог порожній")
-        return await cb.answer()
-
-    await cb.message.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("sub_back:"))
-async def sub_back(cb: types.CallbackQuery):
-    d = await load_data()
-    cat = cb.data.split(":", 1)[1]
-
-    subs = d.get("categories", {}).get(cat, {})
-    if not subs:
-        await cb.message.answer("У цій категорії поки немає товарів.")
-        return await cb.answer()
-
-    await cb.message.answer(
-        f"<b>{cat}</b>\nОберіть підкатегорію:",
-        parse_mode="HTML",
-        reply_markup=subcat_kb(cat, subs.keys())
-    )
+    await send_product_page(cb.message, d, cb.from_user.id, cat, sub, 0)
     await cb.answer()
 
 
@@ -444,12 +448,6 @@ async def order_name(m: types.Message, state: FSMContext):
 
 @router.message(OrderFSM.phone)
 async def order_phone(m: types.Message, state: FSMContext):
-    """
-    Приймає телефон двома шляхами:
-    1) contact (кнопка "Поділитися номером")
-    2) ручний текст
-    Валідація: мінімум 10 цифр.
-    """
     phone_raw = ""
 
     if m.contact and m.contact.phone_number:
@@ -476,7 +474,6 @@ async def order_phone(m: types.Message, state: FSMContext):
 
     await state.update_data(phone=phone_norm)
     await state.set_state(OrderFSM.city)
-    # повертаємо звичайне меню, щоб не висіла клавіатура "поділитися контактом"
     await m.answer("🏙 Введіть місто:", reply_markup=main_menu())
 
 
