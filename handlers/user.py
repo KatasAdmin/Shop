@@ -77,7 +77,7 @@ def catalog_kb(cats):
     kb = InlineKeyboardBuilder()
     for c in cats:
         kb.button(text=str(c), callback_data=f"cat:{c}")
-    kb.adjust(2)
+    kb.adjust(1)  # ✅ тепер категорії йдуть стовпчиком
     return kb.as_markup()
 
 
@@ -90,7 +90,7 @@ def subcat_kb(cat: str, subs):
             continue
         kb.button(text=str(s), callback_data=f"sub:{cat}:{s}")
 
-    kb.adjust(2)
+    kb.adjust(1)  # ✅ тепер підкатегорії йдуть стовпчиком
     return kb.as_markup()
 
 
