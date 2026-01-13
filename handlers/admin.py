@@ -532,6 +532,7 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
+
 def _match_user_record(u: dict, q: str) -> bool:
     q = _norm(q)
     if not q:
@@ -549,6 +550,7 @@ def _match_user_record(u: dict, q: str) -> bool:
     q2 = q[1:] if q.startswith("@") else q
     return (q2 and q2 in username) or (q in full_name)
 
+
 def _user_brief(u: dict) -> str:
     uid = int(u.get("id", 0) or 0)
     username = (u.get("username") or "").strip()
@@ -564,8 +566,50 @@ def _user_brief(u: dict) -> str:
         f"Username: {uname_show}"
     )
 
+
 def _orders_of_user(d: dict, uid: int) -> list[dict]:
     return [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
+
+
+def _virtual_users_from_orders(d: dict, q: str) -> list[dict]:
+    """
+    Якщо users порожні або не знайшли — шукаємо по orders і робимо "віртуальні" user records.
+    """
+    qn = _norm(q)
+    if not qn:
+        return []
+
+    qn2 = qn[1:] if qn.startswith("@") else qn
+
+    cand_uids: set[int] = set()
+    for o in (d.get("orders", []) or []):
+        ouid = int(o.get("user_id", 0) or 0)
+        ouname = _norm(o.get("user_username", "") or "")
+        ofull = _norm(o.get("user_full_name", "") or "")
+
+        if qn.isdigit() and qn in str(ouid):
+            cand_uids.add(ouid)
+        elif qn.startswith("@") and qn2 and ouname == qn2:
+            cand_uids.add(ouid)
+        else:
+            if qn and (qn in ofull or qn in ouname):
+                cand_uids.add(ouid)
+
+    out: list[dict] = []
+    for uid in cand_uids:
+        last = None
+        for o in reversed(d.get("orders", []) or []):
+            if int(o.get("user_id", 0) or 0) == uid:
+                last = o
+                break
+        out.append({
+            "id": uid,
+            "username": (last.get("user_username") if last else "") or "",
+            "full_name": (last.get("user_full_name") if last else "") or "",
+        })
+
+    return out
+
 
 @router.message(F.text == "🔎 Пошук покупця")
 async def buyer_search_btn(m: types.Message, state: FSMContext):
@@ -587,6 +631,7 @@ async def buyer_search_btn(m: types.Message, state: FSMContext):
         reply_markup=staff_menu(m.from_user.id)
     )
 
+
 @router.message(AdminFSM.search_buyer)
 async def buyer_search_run(m: types.Message, state: FSMContext):
     d = await load_data()
@@ -598,49 +643,22 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
         return await m.answer("Введіть ID / @username / ім’я.")
 
     users = list((d.get("users", {}) or {}).values())
-
-    # 1) спочатку шукаємо по users (всі хто натискав /start або писав)
     found_users = [u for u in users if _match_user_record(u, q)]
 
-    # 2) якщо users пусті або нікого не знайшли — fallback на замовлення
+    # fallback на orders
     if not found_users:
-        qn = _norm(q)
-        qn2 = qn[1:] if qn.startswith("@") else qn
-
-        cand_uids: set[int] = set()
-        for o in (d.get("orders", []) or []):
-            ouid = int(o.get("user_id", 0) or 0)
-            ouname = _norm(o.get("user_username", "") or "")
-            ofull = _norm(o.get("user_full_name", "") or "")
-
-            if qn.isdigit() and str(ouid).find(qn) != -1:
-                cand_uids.add(ouid)
-            elif qn.startswith("@") and qn2 and ouname == qn2:
-                cand_uids.add(ouid)
-            else:
-                if qn and (qn in ofull or qn in ouname):
-                    cand_uids.add(ouid)
-
-        # формуємо "віртуальні" user-записи з замовлень
-        for uid in cand_uids:
-            last = None
-            for o in reversed(d.get("orders", []) or []):
-                if int(o.get("user_id", 0) or 0) == uid:
-                    last = o
-                    break
-            found_users.append({
-                "id": uid,
-                "username": (last.get("user_username") if last else "") or "",
-                "full_name": (last.get("user_full_name") if last else "") or "",
-            })
+        found_users = _virtual_users_from_orders(d, q)
 
     if not found_users:
         await state.clear()
         return await m.answer("❌ Нічого не знайдено.", reply_markup=staff_menu(m.from_user.id))
 
     found_users = found_users[:10]
+    await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
 
-        await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
+    # якщо ввели точний ID — покажемо історію одразу після картки
+    q_is_uid = q.isdigit()
+    q_uid = int(q) if q_is_uid else None
 
     for u in found_users:
         uid = int(u.get("id", 0) or 0)
@@ -657,13 +675,12 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
             _user_brief(u)
             + tag_line
             + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
-              "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
+              "Щоб подивитись деталі — введіть ID ще раз (я покажу всі його замовлення нижче).",
             parse_mode="HTML",
             reply_markup=kb.as_markup()
         )
 
-        # якщо запит був прям ID — одразу показуємо історію
-        if q.strip().isdigit() and int(q.strip()) == uid:
+        if q_is_uid and q_uid == uid:
             if not u_orders:
                 await m.answer("📭 У цього покупця ще немає замовлень.")
             else:
@@ -678,6 +695,7 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
 
     await state.clear()
     await m.answer("Готово ✅", reply_markup=staff_menu(m.from_user.id))
+
 
 @router.callback_query(F.data.startswith("adm:usertag:"))
 async def set_user_tag_ask(cb: types.CallbackQuery, state: FSMContext):
