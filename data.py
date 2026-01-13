@@ -20,6 +20,7 @@ def default_data() -> Dict[str, Any]:
         "managers": [],
         "favorites": {},
         "hits": [],
+        "users": {},   # ✅ додати
     }
 
 
