@@ -20,7 +20,8 @@ def default_data() -> Dict[str, Any]:
         "managers": [],
         "favorites": {},
         "hits": [],
-        "users": {},   # ✅ додати
+        "users": {},
+        "user_tags": {},   # ✅ нове: характер/мітки
     }
 
 
