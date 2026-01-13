@@ -409,16 +409,18 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
     if not order:
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
-async def _notify_buyer(title: str):
-    uid = int(order.get("user_id", 0) or 0)
-    if not uid:
-        return
-    txt = title + "\n\n" + format_order_text(d, order)
-    await notify_user(bot, uid, txt, parse_mode="HTML")
-    def _reply_updated(prefix_text: str):
+
+    async def _notify_buyer(title: str):
+        uid = int(order.get("user_id", 0) or 0)
+        if not uid:
+            return
+        txt = title + "\n\n" + format_order_text(d, order)
+        await notify_user(bot, uid, txt, parse_mode="HTML")
+
+    async def _reply_updated(prefix_text: str):
         # показуємо оновлену карточку замовлення з кнопками
         products = _order_products(d, order)
-        return cb.message.answer(
+        await cb.message.answer(
             prefix_text + "\n\n" + order_premium_text(d, order, products),
             parse_mode="HTML",
             reply_markup=order_actions_kb(oid, str(order.get("status", "")))
@@ -428,16 +430,23 @@ async def _notify_buyer(title: str):
     if action == "in_work":
         if order.get("status") not in ("paid", "prepay"):
             return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
+
         order["status"] = "in_work"
         await save_data(d)
+
+        # ✅ повідомлення клієнту
+        await _notify_buyer(f"🟡 Ваше замовлення <b>#{oid}</b> взято в роботу ✅")
+
         await _reply_updated(f"🟡 Замовлення #{oid} взято в роботу.")
         return await cb.answer()
 
     if action == "done":
         if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо завершити", show_alert=True)
+
         order["status"] = "done"
         await save_data(d)
+
         await _reply_updated(f"✅ Замовлення #{oid} завершено.")
         return await cb.answer()
 
@@ -445,32 +454,43 @@ async def _notify_buyer(title: str):
     if action == "shipped":
         if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
+
         order["status"] = "shipped"
         await save_data(d)
+
+        # ✅ повідомлення клієнту
+        await _notify_buyer(f"🚚 Ваше замовлення <b>#{oid}</b> відправлено ✅")
+
         await _reply_updated(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
         return await cb.answer()
 
     if action == "picked":
         if order.get("status") != "shipped":
             return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
+
         order["status"] = "picked"
         await save_data(d)
+
         await _reply_updated(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
         return await cb.answer()
 
     if action == "not_picked":
         if order.get("status") != "shipped":
             return await cb.answer("Це доречно тільки після 'Відправлено'", show_alert=True)
+
         order["status"] = "not_picked"
         await save_data(d)
+
         await _reply_updated(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
         return await cb.answer()
 
     if action == "returned":
         if order.get("status") not in ("shipped", "not_picked", "picked"):
             return await cb.answer("Повернення ставимо після логістики", show_alert=True)
+
         order["status"] = "returned"
         await save_data(d)
+
         await _reply_updated(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
         return await cb.answer()
 
