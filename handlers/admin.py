@@ -1,11 +1,7 @@
 # handlers/admin.py
-from aiogram import Bot
-from utils import notify_user  # + safe_send не треба, notify_user досить
-from utils import format_order_text  # щоб красиво форматнути замовлення
+from __future__ import annotations
 
 from datetime import datetime, timezone
-
-from __future__ import annotations
 
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
@@ -16,6 +12,7 @@ from data import load_data, save_data, next_product_id, find_product
 from states import AdminFSM, EditProductFSM
 from utils import is_admin, is_staff, notify_user, format_order_text
 from text import order_premium_text, product_card
+
 router = Router()
 
 NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
@@ -646,31 +643,78 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
 
     for u in found_users:
-        uid = int(u.get("id", 0) or 0)
-        u_orders = _orders_of_user(d, uid)
+    uid = int(u.get("id", 0) or 0)
+    u_orders = _orders_of_user(d, uid)
 
-        await m.answer(
-            _user_brief(u) + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
-            "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
-            parse_mode="HTML"
-        )
+    tag = ((d.get("user_tags", {}) or {}).get(str(uid), "") or "").strip()
+    tag_line = f"\n🏷 <b>Характер</b>: {tag}" if tag else "\n🏷 <b>Характер</b>: —"
 
-        # якщо запит був прям ID — одразу показуємо історію
-        if q.strip().isdigit() and int(q.strip()) == uid:
-            if not u_orders:
-                await m.answer("📭 У цього покупця ще немає замовлень.")
-            else:
-                await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
-                for o in reversed(u_orders):
-                    products = _order_products(d, o)
-                    await m.answer(
-                        order_premium_text(d, o, products),
-                        parse_mode="HTML",
-                        reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
-                    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🏷 Характер", callback_data=f"adm:usertag:{uid}")
+    kb.adjust(1)
+
+    await m.answer(
+        _user_brief(u)
+        + tag_line
+        + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
+          "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
+
+    # якщо запит був прям ID — одразу показуємо історію
+    if q.strip().isdigit() and int(q.strip()) == uid:
+        if not u_orders:
+            await m.answer("📭 У цього покупця ще немає замовлень.")
+        else:
+            await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
+            for o in reversed(u_orders):
+                products = _order_products(d, o)
+                await m.answer(
+                    order_premium_text(d, o, products),
+                    parse_mode="HTML",
+                    reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+                )
 
     await state.clear()
     await m.answer("Готово ✅", reply_markup=staff_menu(m.from_user.id))
+
+@router.callback_query(F.data.startswith("adm:usertag:"))
+async def set_user_tag_ask(cb: types.CallbackQuery, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    uid = int(cb.data.split(":")[2])
+
+    await state.clear()
+    await state.set_state(AdminFSM.user_tag)
+    await state.update_data(uid=uid)
+
+    await cb.message.answer(
+        f"🏷 Введіть 'характер' для користувача ID <code>{uid}</code>\n"
+        "Або <b>-</b> щоб очистити.",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@router.message(AdminFSM.user_tag)
+async def set_user_tag_save(m: types.Message, state: FSMContext):
+    st = await state.get_data()
+    uid = int(st.get("uid", 0) or 0)
+
+    txt = (m.text or "").strip()
+    if txt == "-":
+        txt = ""
+
+    d = await load_data()
+    d.setdefault("user_tags", {})
+    d["user_tags"][str(uid)] = txt
+    await save_data(d)
+
+    await state.clear()
+    await m.answer("✅ Характер збережено.")
     
 # -------------------- MANAGERS (ADMIN ONLY) --------------------
 
