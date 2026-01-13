@@ -88,7 +88,7 @@ def subcat_kb(cat: str, subs):
     kb.button(text="⬅️ Назад", callback_data="catalog:back")
 
     # підкатегорії
-    kb.button(text="🧷 Утлет", callback_data=f"sub:{cat}:{NO_SUB}")
+    kb.button(text="Утлет 🧷", callback_data=f"sub:{cat}:{NO_SUB}")
 
     for s in subs:
         if s == NO_SUB:
