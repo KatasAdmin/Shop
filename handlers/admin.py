@@ -68,6 +68,7 @@ def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
         [types.KeyboardButton(text="➕ Додати товар"), types.KeyboardButton(text="🛠 Товари")],
         [types.KeyboardButton(text="🗂 Категорії/Підкатегорії")],
         [types.KeyboardButton(text="📋 Нові (оплачені)"), types.KeyboardButton(text="📦 Усі замовлення")],
+        [types.KeyboardButton(text="🔎 Пошук покупця")],
     ]
     if is_admin(uid):
         rows.append([types.KeyboardButton(text="👤 Додати менеджера")])
