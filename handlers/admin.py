@@ -642,7 +642,7 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
 
     await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
 
-    for u in found_users:
+for u in found_users:
     uid = int(u.get("id", 0) or 0)
     u_orders = _orders_of_user(d, uid)
 
@@ -661,6 +661,20 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=kb.as_markup()
     )
+
+    # якщо запит був прям ID — одразу показуємо історію
+    if q.strip().isdigit() and int(q.strip()) == uid:
+        if not u_orders:
+            await m.answer("📭 У цього покупця ще немає замовлень.")
+        else:
+            await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
+            for o in reversed(u_orders):
+                products = _order_products(d, o)
+                await m.answer(
+                    order_premium_text(d, o, products),
+                    parse_mode="HTML",
+                    reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+                )
 
     # якщо запит був прям ID — одразу показуємо історію
     if q.strip().isdigit() and int(q.strip()) == uid:
