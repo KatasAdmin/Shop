@@ -16,6 +16,8 @@ class AdminFSM(StatesGroup):
 
     add_manager = State()
     search_buyer = State()
+    order_ttn = State()     # ✅ нове: введення ТТН
+    user_tag = State()      # ✅ нове: введення "характеру"
 
 
 class EditProductFSM(StatesGroup):
