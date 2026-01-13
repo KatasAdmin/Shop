@@ -5,16 +5,17 @@ from utils import format_order_text  # щоб красиво форматнут�
 
 from datetime import datetime, timezone
 
-from aiogram import Router, types, F
+from __future__ import annotations
+
+from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from data import load_data, save_data, next_product_id, find_product
 from states import AdminFSM, EditProductFSM
-from utils import is_admin, is_staff
-from text import order_premium_text, product_card  # ✅ преміум картка товару
-
+from utils import is_admin, is_staff, notify_user, format_order_text
+from text import order_premium_text, product_card
 router = Router()
 
 NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
@@ -62,6 +63,14 @@ def _order_products(d: dict, o: dict) -> list[dict]:
     return products
     
 
+async def _notify_buyer(bot: Bot, d: dict, order: dict, title: str):
+    uid = int(order.get("user_id", 0) or 0)
+    if not uid:
+        return
+    txt = title + "\n\n" + format_order_text(d, order)
+    await notify_user(bot, uid, txt, parse_mode="HTML")
+    
+    
 # -------------------- MENUS --------------------
 
 def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
@@ -396,7 +405,7 @@ async def orders_all(m: types.Message):
 
 
 @router.callback_query(F.data.startswith("adm:order:"))
-async def order_change_status(cb: types.CallbackQuery, bot: Bot):
+async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMContext):
     d = await load_data()
     if not is_staff(d, cb.from_user.id):
         return await cb.answer("Немає доступу", show_alert=True)
@@ -409,15 +418,7 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
-    async def _notify_buyer(title: str):
-        uid = int(order.get("user_id", 0) or 0)
-        if not uid:
-            return
-        txt = title + "\n\n" + format_order_text(d, order)
-        await notify_user(bot, uid, txt, parse_mode="HTML")
-
     async def _reply_updated(prefix_text: str):
-        # показуємо оновлену карточку замовлення з кнопками
         products = _order_products(d, order)
         await cb.message.answer(
             prefix_text + "\n\n" + order_premium_text(d, order, products),
@@ -425,7 +426,7 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
             reply_markup=order_actions_kb(oid, str(order.get("status", "")))
         )
 
-    # ---- стандартні ----
+    # ---- В РОБОТУ ----
     if action == "in_work":
         if order.get("status") not in ("paid", "prepay"):
             return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
@@ -433,12 +434,11 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         order["status"] = "in_work"
         await save_data(d)
 
-        # ✅ повідомлення клієнту
-        await _notify_buyer(f"🟡 Ваше замовлення <b>#{oid}</b> взято в роботу ✅")
-
         await _reply_updated(f"🟡 Замовлення #{oid} взято в роботу.")
+        await _notify_buyer(bot, d, order, f"🟡 Ваше замовлення #{oid} взято в роботу ✅")
         return await cb.answer()
 
+    # ---- ЗАВЕРШЕНО ----
     if action == "done":
         if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо завершити", show_alert=True)
@@ -447,9 +447,10 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         await save_data(d)
 
         await _reply_updated(f"✅ Замовлення #{oid} завершено.")
+        await _notify_buyer(bot, d, order, f"✅ Ваше замовлення #{oid} завершено 🎉")
         return await cb.answer()
 
-    # ---- логістика ----
+    # ---- ВІДПРАВЛЕНО (ТТН просимо після кліку) ----
     if action == "shipped":
         if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
             return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
@@ -457,12 +458,17 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         order["status"] = "shipped"
         await save_data(d)
 
-        # ✅ повідомлення клієнту
-        await _notify_buyer(f"🚚 Ваше замовлення <b>#{oid}</b> відправлено ✅")
-
         await _reply_updated(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
+        await state.clear()
+        await state.set_state(AdminFSM.order_ttn)
+        await state.update_data(oid=oid)
+
+        await cb.message.answer(
+            "📮 Введіть ТТН для цього замовлення (або '-' якщо без ТТН):"
+        )
         return await cb.answer()
 
+    # ---- ЗАБРАВ ----
     if action == "picked":
         if order.get("status") != "shipped":
             return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
@@ -471,8 +477,10 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         await save_data(d)
 
         await _reply_updated(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
+        await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid}: забрано. Дякуємо! 🙌")
         return await cb.answer()
 
+    # ---- НЕ ЗАБРАВ ----
     if action == "not_picked":
         if order.get("status") != "shipped":
             return await cb.answer("Це доречно тільки після 'Відправлено'", show_alert=True)
@@ -481,8 +489,10 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         await save_data(d)
 
         await _reply_updated(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
+        await _notify_buyer(bot, d, order, f"❌ Замовлення #{oid}: не забрано. Напишіть нам — допоможемо 🤝")
         return await cb.answer()
 
+    # ---- ПОВЕРНУТО ----
     if action == "returned":
         if order.get("status") not in ("shipped", "not_picked", "picked"):
             return await cb.answer("Повернення ставимо після логістики", show_alert=True)
@@ -491,6 +501,7 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot):
         await save_data(d)
 
         await _reply_updated(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
+        await _notify_buyer(bot, d, order, f"🔁 Замовлення #{oid}: повернено. Якщо є питання — пишіть 🙏")
         return await cb.answer()
 
     # ---- історія покупця ----
@@ -1213,6 +1224,31 @@ async def edit_menu(cb: types.CallbackQuery, state: FSMContext):
         reply_markup=edit_menu_kb(pid)
     )
     await cb.answer()
+
+
+@router.message(AdminFSM.order_ttn)
+async def admin_set_ttn(m: types.Message, state: FSMContext, bot: Bot):
+    st = await state.get_data()
+    oid = int(st.get("oid", 0) or 0)
+    txt = (m.text or "").strip()
+
+    d = await load_data()
+    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
+    if not order:
+        await state.clear()
+        return await m.answer("❌ Замовлення не знайдено.")
+
+    if txt == "-":
+        order["ttn"] = ""
+    else:
+        order["ttn"] = txt
+
+    await save_data(d)
+    await state.clear()
+
+    await m.answer("✅ ТТН збережено.")
+    # ✅ тепер відправляємо клієнту повідомлення з ТТН (бо text.py вже вміє показати)
+    await _notify_buyer(bot, d, order, f"🚚 Ваше замовлення #{oid} відправлено ✅")
 
 
 @router.callback_query(F.data.startswith("adm:edit:"))
