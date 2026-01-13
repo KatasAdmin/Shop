@@ -15,6 +15,7 @@ class AdminFSM(StatesGroup):
     prod_photos = State()
 
     add_manager = State()
+    search_buyer = State()
 
 
 class EditProductFSM(StatesGroup):
