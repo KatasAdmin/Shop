@@ -17,7 +17,31 @@ from config import PREPAY_AMOUNT
 router = Router()
 
 NO_SUB = "_"
-PAGE_SIZE = 1  # зараз не використовується, бо ми показуємо по 1 товару
+
+
+# ===================== USERS (TRACK) =====================
+
+def upsert_user(d: dict, u: types.User) -> None:
+    d.setdefault("users", {})
+    uid = str(u.id)
+
+    now = int(time.time())
+    full_name = " ".join([x for x in [u.first_name, u.last_name] if x]) or ""
+    username = (u.username or "")
+
+    if uid not in d["users"]:
+        d["users"][uid] = {
+            "id": u.id,
+            "username": username,
+            "full_name": full_name,
+            "first_seen_ts": now,
+            "last_seen_ts": now,
+        }
+    else:
+        d["users"][uid]["id"] = u.id
+        d["users"][uid]["username"] = username
+        d["users"][uid]["full_name"] = full_name
+        d["users"][uid]["last_seen_ts"] = now
 
 
 # ===================== PHONE HELPERS =====================
@@ -66,33 +90,32 @@ def catalog_kb(cats):
     kb = InlineKeyboardBuilder()
     for c in cats:
         kb.button(text=str(c), callback_data=f"cat:{c}")
-    kb.adjust(1)  # стовпчик
+    kb.adjust(1)  # стовпчиком
     return kb.as_markup()
 
 
 def subcat_kb(cat: str, subs):
     kb = InlineKeyboardBuilder()
 
-    # назад до категорій
     kb.button(text="⬅️ Назад", callback_data="catalog:back")
-
-    # утлет
     kb.button(text="Утлет 🧷", callback_data=f"sub:{cat}:{NO_SUB}")
 
-    # решта підкатегорій
     for s in subs:
         if s == NO_SUB:
             continue
         kb.button(text=str(s), callback_data=f"sub:{cat}:{s}")
 
-    kb.adjust(1)  # стовпчик
+    kb.adjust(1)  # стовпчиком
     return kb.as_markup()
 
 
 def product_kb(pid: int, fav: bool = False):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
-    kb.button(text=("❌ З обраного" if fav else "⭐ В обране"), callback_data=f"fav:{'off' if fav else 'on'}:{pid}")
+    kb.button(
+        text=("❌ З обраного" if fav else "⭐ В обране"),
+        callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
+    )
     kb.adjust(2)
     return kb.as_markup()
 
@@ -125,7 +148,16 @@ def is_fav(d, uid: int, pid: int) -> bool:
     return pid in favs
 
 
-# ===================== SEND PRODUCT (для Хітів/Обраного) =====================
+# ===================== SAFE DELETE =====================
+
+async def _safe_delete(msg: types.Message):
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+# ===================== SEND PRODUCT (for hits/favs lists) =====================
 
 async def send_product(message: types.Message, d, uid: int, p: dict):
     txt = product_card(p)
@@ -145,18 +177,16 @@ def find_order(d, oid: int):
     return None
 
 
-async def _safe_delete(msg: types.Message):
-    try:
-        await msg.delete()
-    except Exception:
-        pass
-
-
 # ===================== START / CANCEL =====================
 
 @router.message(CommandStart())
 async def start(m: types.Message, state: FSMContext):
     await state.clear()
+
+    d = await load_data()
+    upsert_user(d, m.from_user)
+    await save_data(d)
+
     await m.answer("🏠 Меню", reply_markup=main_menu())
 
 
@@ -166,7 +196,7 @@ async def user_cancel(m: types.Message, state: FSMContext):
     await m.answer("Скасовано. 🏠", reply_markup=main_menu())
 
 
-# ===================== CATALOG =====================
+# ===================== CATALOG (1 product per page) =====================
 
 @router.message(F.text == "🛍 Каталог")
 async def catalog(m: types.Message):
@@ -196,14 +226,14 @@ async def choose_cat(cb: types.CallbackQuery):
 def product_page_kb(cat: str, sub: str, i: int, total: int, pid: int, fav: bool):
     kb = InlineKeyboardBuilder()
 
-    # товарні кнопки
+    # товарні
     kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
     kb.button(
         text=("❌ З обраного" if fav else "⭐ В обране"),
         callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
     )
 
-    # навігація (на краях -> noop)
+    # навігація: на краях ставимо noop (щоб не було дублювання/сміття)
     prev_cb = "noop" if i <= 0 else f"page:{cat}:{sub}:{i-1}"
     next_cb = "noop" if i >= total - 1 else f"page:{cat}:{sub}:{i+1}"
 
@@ -211,7 +241,7 @@ def product_page_kb(cat: str, sub: str, i: int, total: int, pid: int, fav: bool)
     kb.button(text=f"{i+1}/{total}", callback_data="noop")
     kb.button(text="➡️", callback_data=next_cb)
 
-    # тільки одна кнопка назад
+    # одна кнопка назад
     kb.button(text="⬅️ Назад", callback_data=f"sub_back:{cat}")
 
     kb.adjust(2, 3, 1)
@@ -235,7 +265,6 @@ async def show_product_page(cb: types.CallbackQuery, cat: str, sub: str, i: int)
     kb = product_page_kb(cat, sub, i, total, pid, fav)
 
     photos = p.get("photos", []) or []
-
     if photos:
         media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
         try:
@@ -292,7 +321,6 @@ async def catalog_back(cb: types.CallbackQuery):
 async def sub_back(cb: types.CallbackQuery):
     d = await load_data()
     cat = cb.data.split(":", 1)[1]
-
     subs = d.get("categories", {}).get(cat, {}) or {}
     if not subs:
         await cb.message.answer("У цій категорії поки немає товарів.")
@@ -329,6 +357,24 @@ async def hits(m: types.Message):
         await m.answer("Хіти є, але товари не знайдені.")
 
 
+@router.message(F.text == "⭐ Обране")
+async def show_favs(m: types.Message):
+    d = await load_data()
+    favs = set(int(x) for x in user_favs(d, m.from_user.id))
+    if not favs:
+        return await m.answer("Обране порожнє.")
+
+    any_sent = False
+    for pid in favs:
+        p = find_product(d, int(pid))
+        if p:
+            any_sent = True
+            await send_product(m, d, m.from_user.id, p)
+
+    if not any_sent:
+        await m.answer("Обране є, але товари не знайдені.")
+
+
 @router.callback_query(F.data.startswith("fav:"))
 async def fav_toggle(cb: types.CallbackQuery):
     d = await load_data()
@@ -349,24 +395,6 @@ async def fav_toggle(cb: types.CallbackQuery):
 
     d["favorites"][str(uid)] = list(sset)
     await save_data(d)
-
-
-@router.message(F.text == "⭐ Обране")
-async def show_favs(m: types.Message):
-    d = await load_data()
-    favs = set(int(x) for x in user_favs(d, m.from_user.id))
-    if not favs:
-        return await m.answer("Обране порожнє.")
-
-    any_sent = False
-    for pid in favs:
-        p = find_product(d, int(pid))
-        if p:
-            any_sent = True
-            await send_product(m, d, m.from_user.id, p)
-
-    if not any_sent:
-        await m.answer("Обране є, але товари не знайдені.")
 
 
 # ===================== CART =====================
@@ -400,7 +428,6 @@ async def show_cart(m: types.Message):
 
     total = cart_total(d, cart)
     txt = cart_summary(d, items)
-
     await m.answer(txt, parse_mode="HTML", reply_markup=cart_kb(total))
 
 
@@ -445,10 +472,8 @@ async def order_name(m: types.Message, state: FSMContext):
 @router.message(OrderFSM.phone)
 async def order_phone(m: types.Message, state: FSMContext):
     phone_raw = ""
-
     if m.contact and m.contact.phone_number:
         phone_raw = m.contact.phone_number
-
     if not phone_raw:
         phone_raw = (m.text or "").strip()
 
@@ -464,9 +489,7 @@ async def order_phone(m: types.Message, state: FSMContext):
             reply_markup=phone_request_kb()
         )
 
-    phone_norm = normalize_phone(phone_raw)
-
-    await state.update_data(phone=phone_norm)
+    await state.update_data(phone=normalize_phone(phone_raw))
     await state.set_state(OrderFSM.city)
     await m.answer("🏙 Введіть місто:", reply_markup=main_menu())
 
@@ -512,12 +535,12 @@ async def order_finish(m: types.Message, state: FSMContext):
 
     d.setdefault("orders", [])
     d["orders"].append({
-    "id": oid,
-    "user_id": m.from_user.id,
-    "user_username": (m.from_user.username or ""),
-    "user_full_name": (m.from_user.full_name or ""),
-    "items": list(cart),
-    "total": float(total),
+        "id": oid,
+        "user_id": m.from_user.id,
+        "user_username": (m.from_user.username or ""),
+        "user_full_name": (m.from_user.full_name or ""),
+        "items": list(cart),
+        "total": float(total),
 
         "status": "pending",
         "created_ts": int(time.time()),
