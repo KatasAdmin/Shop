@@ -640,55 +640,41 @@ async def buyer_search_run(m: types.Message, state: FSMContext):
 
     found_users = found_users[:10]
 
-    await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
+        await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
 
-for u in found_users:
-    uid = int(u.get("id", 0) or 0)
-    u_orders = _orders_of_user(d, uid)
+    for u in found_users:
+        uid = int(u.get("id", 0) or 0)
+        u_orders = _orders_of_user(d, uid)
 
-    tag = ((d.get("user_tags", {}) or {}).get(str(uid), "") or "").strip()
-    tag_line = f"\n🏷 <b>Характер</b>: {tag}" if tag else "\n🏷 <b>Характер</b>: —"
+        tag = ((d.get("user_tags", {}) or {}).get(str(uid), "") or "").strip()
+        tag_line = f"\n🏷 <b>Характер</b>: {tag}" if tag else "\n🏷 <b>Характер</b>: —"
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🏷 Характер", callback_data=f"adm:usertag:{uid}")
-    kb.adjust(1)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="🏷 Характер", callback_data=f"adm:usertag:{uid}")
+        kb.adjust(1)
 
-    await m.answer(
-        _user_brief(u)
-        + tag_line
-        + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
-          "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
+        await m.answer(
+            _user_brief(u)
+            + tag_line
+            + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
+              "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
 
-    # якщо запит був прям ID — одразу показуємо історію
-    if q.strip().isdigit() and int(q.strip()) == uid:
-        if not u_orders:
-            await m.answer("📭 У цього покупця ще немає замовлень.")
-        else:
-            await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
-            for o in reversed(u_orders):
-                products = _order_products(d, o)
-                await m.answer(
-                    order_premium_text(d, o, products),
-                    parse_mode="HTML",
-                    reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
-                )
-
-    # якщо запит був прям ID — одразу показуємо історію
-    if q.strip().isdigit() and int(q.strip()) == uid:
-        if not u_orders:
-            await m.answer("📭 У цього покупця ще немає замовлень.")
-        else:
-            await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
-            for o in reversed(u_orders):
-                products = _order_products(d, o)
-                await m.answer(
-                    order_premium_text(d, o, products),
-                    parse_mode="HTML",
-                    reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
-                )
+        # якщо запит був прям ID — одразу показуємо історію
+        if q.strip().isdigit() and int(q.strip()) == uid:
+            if not u_orders:
+                await m.answer("📭 У цього покупця ще немає замовлень.")
+            else:
+                await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
+                for o in reversed(u_orders):
+                    products = _order_products(d, o)
+                    await m.answer(
+                        order_premium_text(d, o, products),
+                        parse_mode="HTML",
+                        reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+                    )
 
     await state.clear()
     await m.answer("Готово ✅", reply_markup=staff_menu(m.from_user.id))
