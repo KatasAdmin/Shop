@@ -1,6 +1,8 @@
+# utils.py
 from __future__ import annotations
 
 from typing import Dict, Any, List
+
 from aiogram import Bot
 
 from config import ADMIN_ID
@@ -38,13 +40,11 @@ async def notify_user(bot: Bot, user_id: int, text: str, **kwargs):
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     products: List[Dict[str, Any]] = []
-
     for pid in (order.get("items", []) or []):
         try:
             pid_int = int(pid)
         except Exception:
             continue
-
         p = find_product(data, pid_int)
         if p:
             products.append(p)
