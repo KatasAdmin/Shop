@@ -177,12 +177,21 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     status = str(order.get("status", "new"))
 
     status_map = {
-        "paid": "🟢 Оплачено",
-        "in_work": "🟡 В роботі",
-        "done": "✅ Завершено",
-        "new": "🆕 Нове",
-        "pending": "⏳ Очікує оплату",
-    }
+    "paid": "🟢 Оплачено",
+    "prepay": "🟣 Передплата",
+
+    "in_work": "🟡 В роботі",
+    "shipped": "🚚 Відправлено",
+
+    "picked": "✅ Забрав (продано)",
+    "not_picked": "❌ Не забрав",
+    "returned": "🔁 Повернуто",
+
+    "done": "✅ Завершено",
+
+    "new": "🆕 Нове",
+    "pending": "⏳ Очікує оплату",
+}
     st = status_map.get(status, status)
 
     delivery = order.get("delivery", {}) or {}
