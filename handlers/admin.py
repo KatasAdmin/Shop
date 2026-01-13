@@ -199,6 +199,10 @@ def panel_orders_kb() -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📋 Нові (оплачені)", callback_data="adm:panel:orders_paid")
     kb.button(text="📦 Усі замовлення", callback_data="adm:panel:orders_all")
+
+    # ✅ додали пошук покупця в панель
+    kb.button(text="🔎 Пошук покупця", callback_data="adm:panel:buyer_search")
+
     kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
     kb.adjust(1)
     return kb.as_markup()
@@ -324,6 +328,19 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
                 reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
             )
+        return await cb.answer()
+
+        if action == "buyer_search":
+        await state.set_state(AdminFSM.search_buyer)
+        await cb.message.answer(
+            "🔎 <b>Пошук покупця</b>\n\n"
+            "Введіть одне з:\n"
+            "• ID (число)\n"
+            "• @username\n"
+            "• частину імені\n\n"
+            "Приклад: 123456789 або @katas або Віктор",
+            parse_mode="HTML"
+        )
         return await cb.answer()
 
     if action == "add_manager":
