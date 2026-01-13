@@ -232,4 +232,9 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     if np_branch: lines.append(f"📦 {b('НП')}: {np_branch}")
     if comment: lines.append(f"📝 {b('Коментар')}: {i(comment)}")
 
+        # ✅ ТТН / трек-номер
+    ttn = (order.get("ttn") or "").strip()
+    if ttn:
+        lines.append("")
+        lines.append(f"📮 {b('ТТН')}: {code(ttn)}")
     return "\n".join(lines)
