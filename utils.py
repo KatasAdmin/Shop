@@ -1,4 +1,3 @@
-# utils.py
 from __future__ import annotations
 
 from typing import Dict, Any, List
@@ -7,7 +6,6 @@ from aiogram import Bot
 
 from config import ADMIN_ID
 from data import load_data, find_product
-
 from text import order_premium_text
 
 
@@ -33,6 +31,10 @@ async def notify_staff(bot: Bot, text: str, **kwargs):
 
     for uid in recipients:
         await safe_send(bot, uid, text, **kwargs)
+
+
+async def notify_user(bot: Bot, user_id: int, text: str, **kwargs):
+    await safe_send(bot, int(user_id), text, **kwargs)
 
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
