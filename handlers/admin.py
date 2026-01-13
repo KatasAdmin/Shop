@@ -173,7 +173,43 @@ def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
+# -------------------- PANEL (ONE MESSAGE) --------------------
 
+def panel_main_kb(uid: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🧩 Каталог", callback_data="adm:panel:catalog")
+    kb.button(text="📑 Замовлення", callback_data="adm:panel:orders")
+    kb.button(text="⚙️ Налаштування", callback_data="adm:panel:settings")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def panel_catalog_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📦 Товари", callback_data="adm:panel:products")
+    kb.button(text="🗂 Категорії/Підкатегорії", callback_data="adm:panel:cats")
+    kb.button(text="➕ Додати товар", callback_data="adm:panel:add_product")
+    kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def panel_orders_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📋 Нові (оплачені)", callback_data="adm:panel:orders_paid")
+    kb.button(text="📦 Усі замовлення", callback_data="adm:panel:orders_all")
+    kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def panel_settings_kb(uid: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if is_admin(uid):
+        kb.button(text="👤 Додати менеджера", callback_data="adm:panel:add_manager")
+    kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
+    kb.adjust(1)
+    return kb.as_markup()
 # -------------------- COMMON --------------------
 
 @router.message(Command("admin"))
@@ -203,9 +239,100 @@ async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
     d = await load_data()
     if not is_staff(d, cb.from_user.id):
         return await cb.answer("Немає доступу", show_alert=True)
+
     await state.clear()
-    await cb.message.answer("Скасовано.", reply_markup=staff_menu(cb.from_user.id))
+
+    # ✅ Повертаємося в компактну панель одним повідомленням
+    await cb.message.answer(
+        "🔧 Панель (Адмін/Менеджер)",
+        reply_markup=panel_main_kb(cb.from_user.id)
+    )
     await cb.answer()
+
+
+# -------------------- PANEL NAV --------------------
+
+@router.callback_query(F.data.startswith("adm:panel:"))
+async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    await state.clear()
+
+    action = cb.data.split(":")[2]
+
+    # головна
+    if action in ("back", "main"):
+        await cb.message.answer("🔧 Панель (Адмін/Менеджер)", reply_markup=panel_main_kb(cb.from_user.id))
+        return await cb.answer()
+
+    # розділи
+    if action == "catalog":
+        await cb.message.answer("🧩 Каталог:", reply_markup=panel_catalog_kb())
+        return await cb.answer()
+
+    if action == "orders":
+        await cb.message.answer("📑 Замовлення:", reply_markup=panel_orders_kb())
+        return await cb.answer()
+
+    if action == "settings":
+        await cb.message.answer("⚙️ Налаштування:", reply_markup=panel_settings_kb(cb.from_user.id))
+        return await cb.answer()
+
+    # дії (робимо як “перекидання” в існуючі сценарії)
+    if action == "cats":
+        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("catmgmt"))
+        return await cb.answer()
+
+    if action == "products":
+        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("plist_cat"))
+        return await cb.answer()
+
+    if action == "add_product":
+        await state.set_state(AdminFSM.prod_cat)
+        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("prod_cat"))
+        return await cb.answer()
+
+    if action == "orders_paid":
+        # дублюємо логіку "📋 Нові (оплачені)" але через callback
+        paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
+        if not paid:
+            await cb.message.answer("Немає нових оплачених/передплачених замовлень.")
+            return await cb.answer()
+
+        for o in paid:
+            products = _order_products(d, o)
+            await cb.message.answer(
+                order_premium_text(d, o, products),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+            )
+        return await cb.answer()
+
+    if action == "orders_all":
+        orders = d.get("orders", []) or []
+        if not orders:
+            await cb.message.answer("Замовлень ще немає.")
+            return await cb.answer()
+
+        for o in reversed(orders):
+            products = _order_products(d, o)
+            await cb.message.answer(
+                order_premium_text(d, o, products),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+            )
+        return await cb.answer()
+
+    if action == "add_manager":
+        if not is_admin(cb.from_user.id):
+            return await cb.answer("⛔️ Тільки адмін", show_alert=True)
+        await state.set_state(AdminFSM.add_manager)
+        await cb.message.answer("Введіть ID менеджера (число):")
+        return await cb.answer()
+
+    return await cb.answer("Невідома дія", show_alert=True)
 
 
 # -------------------- ORDERS --------------------
