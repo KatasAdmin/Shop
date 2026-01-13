@@ -2,7 +2,6 @@
 from aiogram import Bot
 from utils import notify_user  # + safe_send не треба, notify_user досить
 from utils import format_order_text  # щоб красиво форматнути замовлення
-from __future__ import annotations
 
 from datetime import datetime, timezone
 
