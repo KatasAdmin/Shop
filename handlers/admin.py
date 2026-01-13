@@ -603,6 +603,151 @@ async def add_manager_save(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Менеджера додано: {uid}", reply_markup=staff_menu(m.from_user.id))
 
 
+# -------------------- BUYER SEARCH --------------------
+
+def _norm(s: str) -> str:
+    return (s or "").strip().lower()
+
+def _match_user_record(u: dict, q: str) -> bool:
+    q = _norm(q)
+    if not q:
+        return False
+
+    uid = str(u.get("id", "") or "")
+    username = _norm(u.get("username", "") or "")
+    full_name = _norm(u.get("full_name", "") or "")
+
+    # якщо ввели цифри — шукаємо по id
+    if q.isdigit():
+        return q in uid
+
+    # якщо ввели @username або просто username
+    q2 = q[1:] if q.startswith("@") else q
+    return (q2 and q2 in username) or (q in full_name)
+
+def _user_brief(u: dict) -> str:
+    uid = int(u.get("id", 0) or 0)
+    username = (u.get("username") or "").strip()
+    full_name = (u.get("full_name") or "").strip()
+
+    user_link = f'<a href="tg://user?id={uid}">👤 Покупець</a>'
+    uname_show = f"@{username}" if username else "—"
+
+    return (
+        f"{user_link}\n"
+        f"<b>{full_name or '—'}</b>\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Username: {uname_show}"
+    )
+
+def _orders_of_user(d: dict, uid: int) -> list[dict]:
+    return [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
+
+@router.message(F.text == "🔎 Пошук покупця")
+async def buyer_search_btn(m: types.Message, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    await state.clear()
+    await state.set_state(AdminFSM.search_buyer)
+
+    await m.answer(
+        "🔎 <b>Пошук покупця</b>\n\n"
+        "Введіть одне з:\n"
+        "• ID (число)\n"
+        "• @username\n"
+        "• частину імені\n\n"
+        "Приклад: <code>123456789</code> або <code>@katas</code> або <code>Віктор</code>",
+        parse_mode="HTML",
+        reply_markup=staff_menu(m.from_user.id)
+    )
+
+@router.message(AdminFSM.search_buyer)
+async def buyer_search_run(m: types.Message, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    q = (m.text or "").strip()
+    if not q:
+        return await m.answer("Введіть ID / @username / ім’я.")
+
+    users = list((d.get("users", {}) or {}).values())
+
+    # 1) спочатку шукаємо по users (кращий варіант, бо це всі хто натискав /start або писав)
+    found_users = [u for u in users if _match_user_record(u, q)]
+
+    # 2) якщо users пусті або нікого не знайшли — fallback на замовлення
+    if not found_users:
+        # по замовленнях шукаємо: user_id, user_username, user_full_name
+        qn = _norm(q)
+        qn2 = qn[1:] if qn.startswith("@") else qn
+
+        cand_uids: set[int] = set()
+        for o in (d.get("orders", []) or []):
+            ouid = int(o.get("user_id", 0) or 0)
+            ouname = _norm(o.get("user_username", "") or "")
+            ofull = _norm(o.get("user_full_name", "") or "")
+
+            if qn.isdigit() and int(qn) == ouid:
+                cand_uids.add(ouid)
+            elif qn.startswith("@") and qn2 and ouname == qn2:
+                cand_uids.add(ouid)
+            else:
+                if qn and (qn in ofull or qn in ouname):
+                    cand_uids.add(ouid)
+
+        # формуємо "віртуальні" user-записи з замовлень
+        for uid in cand_uids:
+            last = None
+            for o in reversed(d.get("orders", []) or []):
+                if int(o.get("user_id", 0) or 0) == uid:
+                    last = o
+                    break
+            found_users.append({
+                "id": uid,
+                "username": (last.get("user_username") if last else "") or "",
+                "full_name": (last.get("user_full_name") if last else "") or "",
+            })
+
+    if not found_users:
+        await state.clear()
+        return await m.answer("❌ Нічого не знайдено.", reply_markup=staff_menu(m.from_user.id))
+
+    # якщо знайшло багато — покажемо максимум 10, щоб не спамити
+    found_users = found_users[:10]
+
+    await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
+
+    for u in found_users:
+        uid = int(u.get("id", 0) or 0)
+        u_orders = _orders_of_user(d, uid)
+
+        await m.answer(
+            _user_brief(u) + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
+            "Щоб подивитись деталі — введи ID ще раз (я покажу всі його замовлення нижче).",
+            parse_mode="HTML"
+        )
+
+        # якщо запит був прям ID — одразу покажемо історію (щоб було “вау”)
+        if q.strip().isdigit() and int(q.strip()) == uid:
+            if not u_orders:
+                await m.answer("📭 У цього покупця ще немає замовлень.")
+            else:
+                await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
+                for o in reversed(u_orders):
+                    products = _order_products(d, o)
+                    await m.answer(
+                        order_premium_text(d, o, products),
+                        parse_mode="HTML",
+                        reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+                    )
+
+    await state.clear()
+    await m.answer("Готово ✅", reply_markup=staff_menu(m.from_user.id))
+
+
 # -------------------- ADD CATEGORY --------------------
 
 @router.message(F.text == "➕ Додати категорію")
