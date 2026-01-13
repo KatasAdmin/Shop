@@ -98,6 +98,12 @@ def subcat_kb(cat: str, subs):
     kb.adjust(1)  # ✅ все стовпчиком
     return kb.as_markup()
 
+def back_to_subcats_kb(cat: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data=f"sub_back:{cat}")
+    kb.adjust(1)
+    return kb.as_markup()
+
 
 def product_kb(pid: int, fav: bool = False):
     kb = InlineKeyboardBuilder()
@@ -209,6 +215,39 @@ async def choose_sub(cb: types.CallbackQuery):
     for p in items:
         await send_product(cb.message, d, cb.from_user.id, p)
 
+    # ✅ після списку товарів даємо кнопку "назад"
+    await cb.message.answer(
+        "⬅️ Повернутись до підкатегорій:",
+        reply_markup=back_to_subcats_kb(cat)
+    )
+
+    await cb.answer()
+
+@router.callback_query(F.data == "catalog:back")
+async def catalog_back(cb: types.CallbackQuery):
+    d = await load_data()
+    if not d.get("categories"):
+        await cb.message.answer("Каталог порожній")
+        return await cb.answer()
+
+    await cb.message.answer("Оберіть категорію:", reply_markup=catalog_kb(d["categories"].keys()))
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("sub_back:"))
+async def sub_back(cb: types.CallbackQuery):
+    d = await load_data()
+    cat = cb.data.split(":", 1)[1]
+
+    subs = d.get("categories", {}).get(cat, {})
+    if not subs:
+        await cb.message.answer("У цій категорії поки немає товарів.")
+        return await cb.answer()
+
+    await cb.message.answer(
+        f"<b>{cat}</b>\nОберіть підкатегорію:",
+        parse_mode="HTML",
+        reply_markup=subcat_kb(cat, subs.keys())
+    )
     await cb.answer()
 
 
