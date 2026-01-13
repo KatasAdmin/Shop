@@ -182,7 +182,11 @@ async def admin_cmd(m: types.Message, state: FSMContext):
     if not is_staff(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
     await state.clear()
-    await m.answer("🔧 Панель (Адмін/Менеджер)", reply_markup=staff_menu(m.from_user.id))
+    await m.answer(
+    "🔧 <b>Панель</b>\nОберіть розділ:",
+    parse_mode="HTML",
+    reply_markup=panel_main_kb(m.from_user.id)
+)
 
 
 @router.message(F.text == "❌ Відміна")
