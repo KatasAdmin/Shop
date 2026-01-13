@@ -1,4 +1,7 @@
 # handlers/admin.py
+from aiogram import Bot
+from utils import notify_user  # + safe_send не треба, notify_user досить
+from utils import format_order_text  # щоб красиво форматнути замовлення
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -394,7 +397,7 @@ async def orders_all(m: types.Message):
 
 
 @router.callback_query(F.data.startswith("adm:order:"))
-async def order_change_status(cb: types.CallbackQuery):
+async def order_change_status(cb: types.CallbackQuery, bot: Bot):
     d = await load_data()
     if not is_staff(d, cb.from_user.id):
         return await cb.answer("Немає доступу", show_alert=True)
@@ -406,7 +409,12 @@ async def order_change_status(cb: types.CallbackQuery):
     if not order:
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
-
+async def _notify_buyer(title: str):
+    uid = int(order.get("user_id", 0) or 0)
+    if not uid:
+        return
+    txt = title + "\n\n" + format_order_text(d, order)
+    await notify_user(bot, uid, txt, parse_mode="HTML")
     def _reply_updated(prefix_text: str):
         # показуємо оновлену карточку замовлення з кнопками
         products = _order_products(d, order)
