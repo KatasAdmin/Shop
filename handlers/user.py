@@ -512,10 +512,12 @@ async def order_finish(m: types.Message, state: FSMContext):
 
     d.setdefault("orders", [])
     d["orders"].append({
-        "id": oid,
-        "user_id": m.from_user.id,
-        "items": list(cart),
-        "total": float(total),
+    "id": oid,
+    "user_id": m.from_user.id,
+    "user_username": (m.from_user.username or ""),
+    "user_full_name": (m.from_user.full_name or ""),
+    "items": list(cart),
+    "total": float(total),
 
         "status": "pending",
         "created_ts": int(time.time()),
