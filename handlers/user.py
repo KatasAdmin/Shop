@@ -122,7 +122,7 @@ def product_kb(pid: int, fav: bool = False):
 
 def cart_kb(total: float):
     kb = InlineKeyboardBuilder()
-    kb.button(text=f"🧾 Оформити ({total:.2f} ₴)", callback_data="checkout")
+    kb.button(text="🧾 Оформити замовлення", callback_data="checkout")  # ✅ без суми
     kb.button(text="🗑 Очистити", callback_data="clear")
     kb.adjust(1)
     return kb.as_markup()
