@@ -475,6 +475,103 @@ async def order_change_status(cb: types.CallbackQuery):
 
     return await cb.answer("Невідома дія", show_alert=True)
 
+# -------------------- BUYER SEARCH --------------------
+
+@router.message(F.text == "🔎 Пошук покупця")
+async def buyer_search_btn(m: types.Message, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    await state.clear()
+    await state.set_state(AdminFSM.search_buyer)
+    await m.answer(
+        "🔎 Пошук покупця\n\n"
+        "Введіть одне з:\n"
+        "• ID (число)\n"
+        "• @username\n"
+        "• частину імені\n\n"
+        "Приклад: 123456789 або @katas або Віктор",
+        reply_markup=staff_menu(m.from_user.id)
+    )
+
+
+@router.message(AdminFSM.search_buyer)
+async def buyer_search_run(m: types.Message, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    q = (m.text or "").strip()
+    if not q:
+        return await m.answer("Введіть ID / @username / ім’я.")
+
+    orders = d.get("orders", []) or []
+
+    # 1) якщо число — шукаємо по user_id
+    uid = None
+    if q.isdigit():
+        uid = int(q)
+
+    # 2) якщо @username
+    uname = q[1:].lower() if q.startswith("@") else None
+
+    # підбираємо кандидатів по замовленнях
+    matches = []
+    for o in orders:
+        ouid = int(o.get("user_id", 0) or 0)
+        ouname = str(o.get("user_username", "") or "")
+        ofull = str(o.get("user_full_name", "") or "")
+
+        if uid is not None and ouid == uid:
+            matches.append(o)
+            continue
+
+        if uname is not None and ouname.lower() == uname:
+            matches.append(o)
+            continue
+
+        if uid is None and uname is None:
+            # пошук по імені/юзернейму частково
+            if q.lower() in ofull.lower() or q.lower() in ouname.lower():
+                matches.append(o)
+
+    if not matches:
+        await state.clear()
+        return await m.answer("❌ Нічого не знайдено.", reply_markup=staff_menu(m.from_user.id))
+
+    # групуємо по user_id (щоб не показувати 20 однакових)
+    by_user = {}
+    for o in matches:
+        by_user.setdefault(int(o.get("user_id", 0) or 0), []).append(o)
+
+    # показуємо короткий список знайдених покупців
+    await m.answer(f"✅ Знайдено покупців: {len(by_user)}\n")
+
+    for u, u_orders in by_user.items():
+        # беремо останнє замовлення для інфо
+        last = sorted(u_orders, key=lambda x: int(x.get("id", 0)), reverse=True)[0]
+        uname2 = (last.get("user_username") or "")
+        full2 = (last.get("user_full_name") or "")
+        uname_show = f"@{uname2}" if uname2 else "—"
+
+        # лінк на юзера
+        user_link = f'<a href="tg://user?id={u}">👤 покупець</a>'
+
+        await m.answer(
+            f"{user_link}\n"
+            f"<b>{full2}</b>\n"
+            f"ID: <code>{u}</code>\n"
+            f"Username: {uname_show}\n"
+            f"Замовлень (знайдено): {len(u_orders)}\n\n"
+            f"Щоб показати історію — натисни «📜 Історія покупця» в будь-якому замовленні цього юзера "
+            f"(або введи його ID ще раз і я виведу всі замовлення).",
+            parse_mode="HTML"
+        )
+
+    await state.clear()
+    await m.answer("Готово ✅", reply_markup=staff_menu(m.from_user.id))
+    
 # -------------------- MANAGERS (ADMIN ONLY) --------------------
 
 @router.message(F.text == "👤 Додати менеджера")
