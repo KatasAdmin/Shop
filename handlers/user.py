@@ -492,13 +492,27 @@ async def cart_rm(cb: types.CallbackQuery):
     await cb.answer("Прибрано 🗑")
 
 
+@router.message(F.text == "🧺 Кошик")
+async def show_cart(m: types.Message):
+    d = await load_data()
+    txt, total, items, cart = await _render_cart_text(d, m.from_user.id)
+
+    if not items:
+        return await m.answer("Кошик порожній", reply_markup=main_menu())
+
+    await m.answer(
+        txt,
+        parse_mode="HTML",
+        reply_markup=cart_controls_kb(cart, items, total)
+    )
+
+
 # ===================== CHECKOUT FLOW =====================
 
 @router.callback_query(F.data == "checkout")
 async def checkout(cb: types.CallbackQuery, state: FSMContext):
     d = await load_data()
-    uid = str(cb.from_user.id)
-    cart = d.get("carts", {}).get(uid, [])
+    cart = _cart_dict(d, cb.from_user.id)  # ✅ dict pid->qty
     if not cart:
         return await cb.answer("Кошик порожній", show_alert=True)
 
