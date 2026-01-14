@@ -1,6 +1,8 @@
 # handlers/user.py
 import time
 import re
+import math
+from typing import Tuple, List, Dict
 
 from aiogram import Router, F, types, Bot
 from aiogram.filters import CommandStart
@@ -11,12 +13,14 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
 from utils import notify_staff, format_order_text
-from text import product_card, cart_summary
+from text import product_card  # cart_summary більше не використовуємо (бо робимо сторінки)
 from config import PREPAY_AMOUNT
 
 router = Router()
 
 NO_SUB = "_"
+
+CART_PER_PAGE = 2  # ✅ 2 товари на сторінку
 
 
 # ===================== USERS (TRACK) =====================
@@ -385,7 +389,44 @@ async def fav_toggle(cb: types.CallbackQuery):
     await save_data(d)
 
 
-# ===================== CART (DICT pid->qty) =====================
+# ===================== CART (PAGED, 2 ITEMS) =====================
+
+def _money_uah(x) -> str:
+    try:
+        v = float(x)
+    except Exception:
+        v = 0.0
+    if v.is_integer():
+        return f"{int(v)} ₴"
+    return f"{v:.2f} ₴"
+
+
+def _promo_active(p: dict, now_ts: int) -> bool:
+    # локальна логіка, сумісна з твоїм schema
+    try:
+        promo_price = float(p.get("promo_price") or 0)
+    except Exception:
+        promo_price = 0.0
+    if promo_price <= 0:
+        return False
+
+    until = p.get("promo_until_ts")
+    if until is None:
+        return True
+    try:
+        until_i = int(until)
+    except Exception:
+        return True
+    return now_ts <= until_i
+
+
+def _unit_price_str(p: dict, now_ts: int) -> str:
+    base = float(p.get("base_price", p.get("price", 0)) or 0)
+    if _promo_active(p, now_ts):
+        promo = float(p.get("promo_price") or 0)
+        return f"~~{_money_uah(base)}~~ → <b>{_money_uah(promo)}</b>"
+    return f"<b>{_money_uah(base)}</b>"
+
 
 def _cart_dict(d: dict, uid: int) -> dict:
     """
@@ -424,60 +465,141 @@ def _cart_dict(d: dict, uid: int) -> dict:
     return d["carts"][key]
 
 
-async def _render_cart_text(d: dict, uid: int) -> tuple[str, float, list[dict], dict]:
-    cart = _cart_dict(d, uid)
-
-    items: list[dict] = []
-    for pid_str, qty in cart.items():
-        if int(qty or 0) <= 0:
+def _cart_items_all(d: dict, cart: dict) -> List[dict]:
+    items: List[dict] = []
+    # стабільний порядок: за id
+    for pid_str in sorted(cart.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9):
+        qty = int(cart.get(pid_str, 0) or 0)
+        if qty <= 0:
             continue
         p = find_product(d, int(pid_str))
         if p:
             items.append(p)
-
-    total = cart_total(d, cart)
-    txt = cart_summary(d, items, cart)
-    return txt, total, items, cart
+    return items
 
 
-def cart_controls_kb(cart: dict, items: list[dict], total: float):
+def _cart_pages_count(items_count: int) -> int:
+    return max(1, int(math.ceil(items_count / CART_PER_PAGE)))
+
+
+def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
     """
-    UX:
-    [🧺 Назва · #ID] [🗑]
-    [➖] [N шт] [➕]
-    + дії внизу
+    Макет:
+    | Товар1 | Товар2 |
+    | - qty + | - qty + |
+    (пейджер)
+    + checkout/clear
     """
     kb = InlineKeyboardBuilder()
 
-    for p in items:
+    # ---- row 1: names (2 columns) ----
+    if page_items:
+        btns = []
+        for p in page_items:
+            pid = int(p["id"])
+            name = str(p.get("name", "Товар"))
+            # коротко, щоб не ламало рядок
+            if len(name) > 18:
+                name = name[:18] + "…"
+            btns.append((f"🧾 {name} #{pid}", f"cart:open:{pid}:{page}"))
+
+        # рівно 2 колонки: якщо 1 товар — просто 1 кнопка
+        for text, cb in btns:
+            kb.button(text=text, callback_data=cb)
+        kb.adjust(2)
+
+        # ---- row 2: controls (6 buttons) ----
+        # ➖ qty ➕  |  ➖ qty ➕
+        for p in page_items:
+            pid = int(p["id"])
+            qty = int(cart.get(str(pid), 0) or 0)
+            kb.button(text="➖", callback_data=f"cart:dec:{pid}:{page}")
+            kb.button(text=f"{qty}", callback_data="noop")
+            kb.button(text="➕", callback_data=f"cart:inc:{pid}:{page}")
+
+        # якщо на сторінці 1 товар — буде 3 кнопки, норм
+        kb.adjust(6)  # спробує тримати все в одному рядку, коли 2 товари
+
+        # ---- optional remove row (мінімалізм): робимо 🗑 окремо на товар ----
+        # щоб не “пилити” основний ряд
+        for p in page_items:
+            pid = int(p["id"])
+            kb.button(text=f"🗑 Видалити #{pid}", callback_data=f"cart:rm:{pid}:{page}")
+        kb.adjust(2)
+
+    # ---- pager ----
+    prev_p = page - 1 if page > 0 else None
+    next_p = page + 1 if page < pages - 1 else None
+
+    kb.button(text="⬅️", callback_data=f"cart:page:{prev_p}" if prev_p is not None else "noop")
+    kb.button(text=f"{page+1}/{pages}", callback_data="noop")
+    kb.button(text="➡️", callback_data=f"cart:page:{next_p}" if next_p is not None else "noop")
+    kb.adjust(3)
+
+    # ---- actions ----
+    kb.button(text="🧾 Оформити замовлення", callback_data="checkout")
+    kb.button(text="🗑 Очистити", callback_data="clear")
+    kb.adjust(1)
+
+    return kb.as_markup()
+
+
+def _render_cart_page(d: dict, uid: int, page: int) -> Tuple[str, float, List[dict], dict, int, int]:
+    cart = _cart_dict(d, uid)
+    all_items = _cart_items_all(d, cart)
+
+    if not all_items:
+        return "Кошик порожній", 0.0, [], cart, 0, 1
+
+    pages = _cart_pages_count(len(all_items))
+    page = max(0, min(page, pages - 1))
+
+    start = page * CART_PER_PAGE
+    end = start + CART_PER_PAGE
+    page_items = all_items[start:end]
+
+    total = cart_total(d, cart)
+
+    now_ts = int(time.time())
+
+    lines: List[str] = []
+    lines.append("🧺 <b>Кошик</b>")
+    lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+    lines.append("")
+
+    for p in page_items:
         pid = int(p["id"])
         qty = int(cart.get(str(pid), 0) or 0)
         if qty <= 0:
             continue
 
-        name = str(p.get("name", "Товар")).strip()
-        title = (name[:22] + "…") if len(name) > 23 else name
-        kb.row(
-            types.InlineKeyboardButton(text=f"🧺 {title} · #{pid}", callback_data=f"cart:open:{pid}"),
-            types.InlineKeyboardButton(text="🗑", callback_data=f"cart:rm:{pid}"),
-        )
-        kb.row(
-            types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}"),
-            types.InlineKeyboardButton(text=f"{qty} шт", callback_data="noop"),
-            types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}"),
-        )
+        unit_is_promo = _promo_active(p, now_ts)
+        unit_val = float(p.get("promo_price") or 0) if unit_is_promo else float(p.get("base_price", p.get("price", 0)) or 0)
+        line_total = unit_val * qty
 
-    kb.row(types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
-    kb.row(types.InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"))
+        name = str(p.get("name", "Товар"))
+        price_str = _unit_price_str(p, now_ts)
 
-    return kb.as_markup()
+        lines.append(f"• <b>{name}</b> (<code>#{pid}</code>)")
+        lines.append(f"  {price_str} × <b>{qty}</b> = <b>{_money_uah(line_total)}</b>")
+        lines.append("")
+
+    lines.append(f"💳 <b>Разом</b>: <b>{_money_uah(total)}</b>")
+    return "\n".join(lines), float(total), page_items, cart, page, pages
 
 
-def back_to_cart_kb():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад до кошика", callback_data="cart:view")
-    kb.adjust(1)
-    return kb.as_markup()
+async def _edit_cart(cb: types.CallbackQuery, page: int):
+    d = await load_data()
+    txt, total, page_items, cart, page, pages = _render_cart_page(d, cb.from_user.id, page)
+
+    if not page_items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_paged_kb(cart, page_items, page, pages))
 
 
 @router.callback_query(F.data.startswith("add:"))
@@ -495,63 +617,12 @@ async def add_cart(cb: types.CallbackQuery):
 @router.message(F.text == "🧺 Кошик")
 async def show_cart(m: types.Message):
     d = await load_data()
-    txt, total, items, cart = await _render_cart_text(d, m.from_user.id)
+    txt, total, page_items, cart, page, pages = _render_cart_page(d, m.from_user.id, 0)
 
-    if not items:
+    if not page_items:
         return await m.answer("Кошик порожній", reply_markup=main_menu())
 
-    await m.answer(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
-
-
-@router.callback_query(F.data == "cart:view")
-async def cart_view_same_message(cb: types.CallbackQuery):
-    d = await load_data()
-    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
-
-    if not items:
-        try:
-            await cb.message.edit_text("Кошик порожній", reply_markup=None)
-        except Exception:
-            pass
-        return await cb.answer()
-
-    try:
-        await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
-    except Exception:
-        pass
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("cart:open:"))
-async def cart_open_product_in_same_message(cb: types.CallbackQuery):
-    d = await load_data()
-    pid = int(cb.data.split(":")[2])
-
-    p = find_product(d, pid)
-    if not p:
-        return await cb.answer("Товар не знайдено", show_alert=True)
-
-    txt = product_card(p)
-    photos = p.get("photos", []) or []
-
-    # показуємо товар в тому ж повідомленні
-    if photos:
-        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
-        try:
-            await cb.message.edit_media(media=media, reply_markup=back_to_cart_kb())
-        except Exception:
-            # якщо це було текстове повідомлення і edit_media не пройшов
-            try:
-                await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=back_to_cart_kb())
-            except Exception:
-                pass
-    else:
-        try:
-            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=back_to_cart_kb())
-        except Exception:
-            pass
-
-    await cb.answer()
+    await m.answer(txt, parse_mode="HTML", reply_markup=cart_paged_kb(cart, page_items, page, pages))
 
 
 @router.callback_query(F.data == "clear")
@@ -568,32 +639,43 @@ async def clear_cart(cb: types.CallbackQuery):
         pass
 
 
+@router.callback_query(F.data.startswith("cart:page:"))
+async def cart_page(cb: types.CallbackQuery):
+    # cart:page:{i}
+    parts = cb.data.split(":")
+    try:
+        page = int(parts[2])
+    except Exception:
+        page = 0
+
+    await _edit_cart(cb, page)
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("cart:inc:"))
 async def cart_inc(cb: types.CallbackQuery):
-    d = await load_data()
-    pid = int(cb.data.split(":")[2])
+    # cart:inc:{pid}:{page}
+    _, _, pid_str, page_str = cb.data.split(":", 3)
+    pid = int(pid_str)
+    page = int(page_str)
 
+    d = await load_data()
     cart = _cart_dict(d, cb.from_user.id)
     cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
     await save_data(d)
 
-    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
-    if not items:
-        try:
-            await cb.message.edit_text("Кошик порожній", reply_markup=None)
-        except Exception:
-            pass
-        return await cb.answer()
-
-    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await _edit_cart(cb, page)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cart:dec:"))
 async def cart_dec(cb: types.CallbackQuery):
-    d = await load_data()
-    pid = int(cb.data.split(":")[2])
+    # cart:dec:{pid}:{page}
+    _, _, pid_str, page_str = cb.data.split(":", 3)
+    pid = int(pid_str)
+    page = int(page_str)
 
+    d = await load_data()
     cart = _cart_dict(d, cb.from_user.id)
     cur = int(cart.get(str(pid), 0) or 0)
     if cur <= 1:
@@ -602,37 +684,73 @@ async def cart_dec(cb: types.CallbackQuery):
         cart[str(pid)] = cur - 1
     await save_data(d)
 
-    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
-    if not items:
-        try:
-            await cb.message.edit_text("Кошик порожній", reply_markup=None)
-        except Exception:
-            pass
-        return await cb.answer()
+    # якщо сторінка стала порожня (видалили останній товар на останній сторінці) — відкотимо на попередню
+    txt, total, page_items, cart2, page2, pages2 = _render_cart_page(d, cb.from_user.id, page)
+    if not page_items and page > 0:
+        page -= 1
 
-    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await _edit_cart(cb, page)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cart:rm:"))
 async def cart_rm(cb: types.CallbackQuery):
-    d = await load_data()
-    pid = int(cb.data.split(":")[2])
+    # cart:rm:{pid}:{page}
+    _, _, pid_str, page_str = cb.data.split(":", 3)
+    pid = int(pid_str)
+    page = int(page_str)
 
+    d = await load_data()
     cart = _cart_dict(d, cb.from_user.id)
     cart.pop(str(pid), None)
     await save_data(d)
 
-    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
-    if not items:
-        try:
-            await cb.message.edit_text("Кошик порожній", reply_markup=None)
-        except Exception:
-            pass
-        return await cb.answer("Прибрано 🗑")
+    txt, total, page_items, cart2, page2, pages2 = _render_cart_page(d, cb.from_user.id, page)
+    if not page_items and page > 0:
+        page -= 1
 
-    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await _edit_cart(cb, page)
     await cb.answer("Прибрано 🗑")
+
+
+@router.callback_query(F.data.startswith("cart:open:"))
+async def cart_open_product(cb: types.CallbackQuery):
+    # cart:open:{pid}:{page}
+    _, _, pid_str, page_str = cb.data.split(":", 3)
+    pid = int(pid_str)
+    page = int(page_str)
+
+    d = await load_data()
+    p = find_product(d, pid)
+    if not p:
+        await cb.answer("Товар не знайдено", show_alert=True)
+        return
+
+    txt = product_card(p)
+
+    # кнопки в перегляді товару (в кошику)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➖", callback_data=f"cart:dec:{pid}:{page}")
+    kb.button(text="🧺 Назад в кошик", callback_data=f"cart:back:{page}")
+    kb.button(text="➕", callback_data=f"cart:inc:{pid}:{page}")
+    kb.adjust(3)
+    kb.button(text=f"🗑 Прибрати #{pid}", callback_data=f"cart:rm:{pid}:{page}")
+    kb.adjust(1)
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cart:back:"))
+async def cart_back(cb: types.CallbackQuery):
+    # cart:back:{page}
+    parts = cb.data.split(":")
+    try:
+        page = int(parts[2])
+    except Exception:
+        page = 0
+    await _edit_cart(cb, page)
+    await cb.answer()
 
 
 # ===================== CHECKOUT FLOW =====================
@@ -718,6 +836,7 @@ async def order_finish(m: types.Message, state: FSMContext):
     st["comment"] = comment
 
     d = await load_data()
+
     cart = _cart_dict(d, m.from_user.id)
     if not cart:
         await state.clear()
