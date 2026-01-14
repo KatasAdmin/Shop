@@ -78,20 +78,39 @@ def find_product(data: Dict[str, Any], pid: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def cart_total(data: Dict[str, Any], cart: List[int]) -> float:
+def cart_total(d: dict, cart) -> float:
+    """
+    cart може бути:
+    - list[int pid] (старий формат)
+    - dict[str pid] = qty (новий формат)
+    """
     total = 0.0
-    now_ts = None  # можна не передавати, is_promo_active сам візьме now
-    for pid in cart:
-        p = find_product(data, pid)
-        if not p:
-            continue
 
-        # сумісність зі старими товарами
-        base = float(p.get("base_price", p.get("price", 0)) or 0)
+    # старий формат
+    if isinstance(cart, list):
+        for pid in cart:
+            p = find_product(d, int(pid))
+            if not p:
+                continue
+            # якщо в тебе є промо логіка тут — врахуй її
+            total += float(p.get("promo_price") or 0) if (p.get("promo_price") and p.get("promo_price") > 0) else float(p.get("base_price", p.get("price", 0)) or 0)
+        return float(total)
 
-        if is_promo_active(p, now_ts=now_ts):
-            total += float(p.get("promo_price") or 0)
-        else:
-            total += base
+    # новий формат
+    if isinstance(cart, dict):
+        for pid_str, qty in cart.items():
+            try:
+                qty_i = int(qty)
+                pid_i = int(pid_str)
+            except Exception:
+                continue
+            if qty_i <= 0:
+                continue
+            p = find_product(d, pid_i)
+            if not p:
+                continue
+
+            price = float(p.get("promo_price") or 0) if (p.get("promo_price") and p.get("promo_price") > 0) else float(p.get("base_price", p.get("price", 0)) or 0)
+            total += price * qty_i
 
     return float(total)
