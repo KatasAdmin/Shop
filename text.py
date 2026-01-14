@@ -132,12 +132,18 @@ def product_short(p: Dict[str, Any]) -> str:
     name = esc(str(p.get("name", "Товар")))
     pid = p.get("id", "")
     base = p.get("base_price", p.get("price", 0))
+    qty = int(p.get("_qty", 1) or 1)
 
     if is_promo_active(p):
         promo = float(p.get("promo_price") or 0)
-        return f"• {b(name)} ({code(f'#{pid}')}) — {s_(money_uah(base))} → {b(money_uah(promo))}"
+        line = f"• {b(name)} ({code(f'#{pid}')}) — {s_(money_uah(base))} → {b(money_uah(promo))}"
+    else:
+        line = f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
 
-    return f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
+    if qty > 1:
+        line += f"  × {b(str(qty))}"
+
+    return line
 
 def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[str, int]) -> str:
     now = _now_ts()
@@ -158,12 +164,16 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[s
             continue
 
         unit = float(p.get("promo_price") or 0) if is_promo_active(p, now_ts=now) else float(p.get("base_price", p.get("price", 0)) or 0)
-        total += unit * qty
+        line_total = unit * qty
+        total += line_total
 
-        # покажемо кількість мінімалістично
-        # • Назва (#id) — 199 ₴ × 2 = 398 ₴
         name = esc(str(p.get("name", "Товар")))
-        lines.append(f"• {b(name)} ({code(f'#{p.get('id','')}')}) — {b(money_uah(unit))} × {b(str(qty))} = {b(money_uah(unit*qty))}")
+        pid_show = code(f"#{pid}")
+
+        # • Назва (#12) — 199 ₴ × 2 = 398 ₴
+        lines.append(
+            f"• {b(name)} ({pid_show}) — {b(money_uah(unit))} × {b(str(qty))} = {b(money_uah(line_total))}"
+        )
 
     lines.append("")
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
@@ -197,10 +207,9 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     now = _now_ts()
     total = 0.0
     for p in products:
-        if is_promo_active(p, now_ts=now):
-            total += float(p.get("promo_price") or 0)
-        else:
-            total += float(p.get("base_price", p.get("price", 0)) or 0)
+        qty = int(p.get("_qty", 1) or 1)
+        unit = float(p.get("promo_price") or 0) if is_promo_active(p, now_ts=now) else float(p.get("base_price", p.get("price", 0)) or 0)
+        total += unit * qty
 
     lines: List[str] = []
     lines.append(f"📦 {b('Замовлення')} {code(f'#{oid}')}")
