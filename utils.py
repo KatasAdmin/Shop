@@ -1,3 +1,4 @@
+# utils.py
 from __future__ import annotations
 
 from typing import Dict, Any, List
@@ -6,7 +7,7 @@ from aiogram import Bot
 
 from config import ADMIN_ID
 from data import load_data, find_product
-from text import order_premium_text  # ❌ order_user_text прибрали
+from text import order_premium_text
 
 
 def is_admin(uid: int) -> bool:
@@ -37,29 +38,11 @@ async def notify_user(bot: Bot, user_id: int, text: str, **kwargs):
     await safe_send(bot, int(user_id), text, **kwargs)
 
 
-def _order_products(data: Dict[str, Any], order: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Залишив як fallback/хелпер.
-    Але у format_order_text нижче ми вже збираємо products із qty (через _qty).
-    """
-    products: List[Dict[str, Any]] = []
-    for pid in (order.get("items", []) or []):
-        try:
-            pid_int = int(pid)
-        except Exception:
-            continue
-        p = find_product(data, pid_int)
-        if p:
-            products.append(p)
-    return products
-
-
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
     """
-    Формує текст замовлення для менеджера/адміна через order_premium_text,
-    з підтримкою items у форматі:
-      - старий: [1, 2, 3]
-      - новий: [{"pid": 1, "qty": 2}, ...]
+    Підтримує items у форматі:
+    - [pid, pid, ...] (старий)
+    - [{"pid": 12, "qty": 2}, ...] (новий)
     """
     products: List[Dict[str, Any]] = []
 
@@ -82,8 +65,8 @@ def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
 
         p = find_product(data, pid_int)
         if p:
-            pp = dict(p)              # копія
-            pp["_qty"] = max(1, qty)  # щоб text.py показав ×qty
+            pp = dict(p)
+            pp["_qty"] = max(1, qty)
             products.append(pp)
 
     return order_premium_text(data, order, products)
