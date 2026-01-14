@@ -10,6 +10,7 @@ class AdminFSM(StatesGroup):
     prod_cat = State()
     prod_sub = State()
     prod_name = State()
+    prod_sku = State()
     prod_price = State()
     prod_desc = State()
     prod_photos = State()
