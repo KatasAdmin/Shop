@@ -9,14 +9,18 @@ from typing import Any, Dict, Optional, List
 def b(s: str) -> str:
     return f"<b>{s}</b>"
 
+
 def i(s: str) -> str:
     return f"<i>{s}</i>"
+
 
 def s_(s: str) -> str:
     return f"<s>{s}</s>"
 
+
 def code(s: str) -> str:
     return f"<code>{s}</code>"
+
 
 def esc(text: str) -> str:
     # Telegram HTML safe
@@ -34,6 +38,7 @@ def esc(text: str) -> str:
 
 def _now_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
+
 
 def is_promo_active(p: Dict[str, Any], now_ts: Optional[int] = None) -> bool:
     """
@@ -80,22 +85,26 @@ def money_uah(x: Any) -> str:
         return f"{int(v)} ₴"
     return f"{v:.2f} ₴"
 
+
+def _safe_float(x: Any) -> float:
+    try:
+        v = float(x)
+    except Exception:
+        return 0.0
+    if v != v or v in (float("inf"), float("-inf")):
+        return 0.0
+    return v
+
+
 def price_line(p: Dict[str, Any]) -> str:
     """
     Якщо є акція:  💰 ~~2499 ₴~~  <b>1999 ₴</b>  🔥 <b>-20%</b>
     Інакше:         💰 <b>2499 ₴</b>
     """
-    base = p.get("base_price", p.get("price", 0))
-    try:
-        base_v = float(base or 0)
-    except Exception:
-        base_v = 0.0
+    base_v = _safe_float(p.get("base_price", p.get("price", 0)))
 
     if is_promo_active(p):
-        try:
-            promo_v = float(p.get("promo_price") or 0)
-        except Exception:
-            promo_v = 0.0
+        promo_v = _safe_float(p.get("promo_price", 0))
 
         perc = ""
         if base_v > 0 and promo_v > 0 and promo_v < base_v:
@@ -128,14 +137,15 @@ def product_card(p: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+
 def product_short(p: Dict[str, Any]) -> str:
     name = esc(str(p.get("name", "Товар")))
     pid = p.get("id", "")
-    base = p.get("base_price", p.get("price", 0))
+    base = _safe_float(p.get("base_price", p.get("price", 0)))
     qty = int(p.get("_qty", 1) or 1)
 
     if is_promo_active(p):
-        promo = float(p.get("promo_price") or 0)
+        promo = _safe_float(p.get("promo_price", 0))
         line = f"• {b(name)} ({code(f'#{pid}')}) — {s_(money_uah(base))} → {b(money_uah(promo))}"
     else:
         line = f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
@@ -144,6 +154,7 @@ def product_short(p: Dict[str, Any]) -> str:
         line += f"  × {b(str(qty))}"
 
     return line
+
 
 def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[str, int]) -> str:
     now = _now_ts()
@@ -163,14 +174,13 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[s
         if qty <= 0:
             continue
 
-        unit = float(p.get("promo_price") or 0) if is_promo_active(p, now_ts=now) else float(p.get("base_price", p.get("price", 0)) or 0)
+        unit = _safe_float(p.get("promo_price") if is_promo_active(p, now_ts=now) else p.get("base_price", p.get("price", 0)))
         line_total = unit * qty
         total += line_total
 
         name = esc(str(p.get("name", "Товар")))
         pid_show = code(f"#{pid}")
 
-        # • Назва (#12) — 199 ₴ × 2 = 398 ₴
         lines.append(
             f"• {b(name)} ({pid_show}) — {b(money_uah(unit))} × {b(str(qty))} = {b(money_uah(line_total))}"
         )
@@ -178,6 +188,7 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[s
     lines.append("")
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
     return "\n".join(lines)
+
 
 def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: List[Dict[str, Any]]) -> str:
     oid = order.get("id", "")
@@ -208,7 +219,7 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     total = 0.0
     for p in products:
         qty = int(p.get("_qty", 1) or 1)
-        unit = float(p.get("promo_price") or 0) if is_promo_active(p, now_ts=now) else float(p.get("base_price", p.get("price", 0)) or 0)
+        unit = _safe_float(p.get("promo_price") if is_promo_active(p, now_ts=now) else p.get("base_price", p.get("price", 0)))
         total += unit * qty
 
     lines: List[str] = []
@@ -244,3 +255,13 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
         lines.append(f"📮 {b('ТТН')}: {code(ttn)}")
 
     return "\n".join(lines)
+
+
+# -------- compatibility (old imports) --------
+
+def order_user_text(data: Dict[str, Any], order: Dict[str, Any], products: List[Dict[str, Any]]) -> str:
+    """
+    Сумісність зі старим кодом: раніше могли імпортувати order_user_text.
+    Поки що для юзера можна показувати той самий формат, що і для менеджера.
+    """
+    return order_premium_text(data, order, products)
