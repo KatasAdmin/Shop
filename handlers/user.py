@@ -402,23 +402,28 @@ async def fav_toggle(cb: types.CallbackQuery):
 @router.callback_query(F.data.startswith("add:"))
 async def add_cart(cb: types.CallbackQuery):
     d = await load_data()
-    uid = str(cb.from_user.id)
     pid = int(cb.data.split(":")[1])
 
-    d.setdefault("carts", {})
-    d["carts"].setdefault(uid, []).append(pid)
+    cart = _cart_dict(d, cb.from_user.id)
+    cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
     await save_data(d)
 
     await cb.answer("Додано 🛒")
 
 
-@router.message(F.text == "🧺 Кошик")
-async def show_cart(m: types.Message):
+@router.callback_query(F.data == "clear")
+async def clear_cart(cb: types.CallbackQuery):
     d = await load_data()
-    uid = str(m.from_user.id)
-    cart = d.get("carts", {}).get(uid, [])
-    if not cart:
-        return await m.answer("Кошик порожній")
+    d.setdefault("carts", {})
+    d["carts"][str(cb.from_user.id)] = {}
+    await save_data(d)
+    await cb.answer("Очищено 🗑")
+
+    # красиво: оновимо повідомлення якщо можна
+    try:
+        await cb.message.edit_text("Кошик порожній", reply_markup=None)
+    except Exception:
+        pass
 
     items = []
     for pid in cart:
@@ -438,6 +443,73 @@ async def clear_cart(cb: types.CallbackQuery):
     d["carts"][str(cb.from_user.id)] = []
     await save_data(d)
     await cb.answer("Очищено 🗑")
+
+
+@router.callback_query(F.data.startswith("cart:inc:"))
+async def cart_inc(cb: types.CallbackQuery):
+    d = await load_data()
+    pid = int(cb.data.split(":")[2])
+
+    cart = _cart_dict(d, cb.from_user.id)
+    cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
+    await save_data(d)
+
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cart:dec:"))
+async def cart_dec(cb: types.CallbackQuery):
+    d = await load_data()
+    pid = int(cb.data.split(":")[2])
+
+    cart = _cart_dict(d, cb.from_user.id)
+    cur = int(cart.get(str(pid), 0) or 0)
+    if cur <= 1:
+        cart.pop(str(pid), None)   # якщо стало 0 — прибираємо позицію
+    else:
+        cart[str(pid)] = cur - 1
+    await save_data(d)
+
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cart:rm:"))
+async def cart_rm(cb: types.CallbackQuery):
+    d = await load_data()
+    pid = int(cb.data.split(":")[2])
+
+    cart = _cart_dict(d, cb.from_user.id)
+    cart.pop(str(pid), None)
+    await save_data(d)
+
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer("Прибрано 🗑")
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await cb.answer("Прибрано 🗑")
 
 
 # ===================== CHECKOUT FLOW =====================
@@ -568,6 +640,91 @@ async def order_finish(m: types.Message, state: FSMContext):
         f"Оберіть спосіб оплати:",
         reply_markup=payment_choice_kb(oid, total)
     )
+
+
+def _cart_dict(d: dict, uid: int) -> dict:
+    """
+    Повертає кошик користувача у форматі dict[str(pid)] = qty(int).
+    Міграція зі старого формату list(pid, pid, ...) автоматично.
+    """
+    d.setdefault("carts", {})
+    key = str(uid)
+    raw = d["carts"].get(key, {})
+
+    # старий формат: список pid
+    if isinstance(raw, list):
+        out: dict[str, int] = {}
+        for x in raw:
+            try:
+                pid = str(int(x))
+            except Exception:
+                continue
+            out[pid] = out.get(pid, 0) + 1
+        d["carts"][key] = out
+        return out
+
+    # новий формат
+    if isinstance(raw, dict):
+        # нормалізуємо qty
+        out: dict[str, int] = {}
+        for k, v in raw.items():
+            try:
+                pid = str(int(k))
+                qty = int(v)
+            except Exception:
+                continue
+            if qty > 0:
+                out[pid] = qty
+        d["carts"][key] = out
+        return out
+
+    d["carts"][key] = {}
+    return d["carts"][key]
+
+
+def cart_controls_kb(cart: dict, items: list[dict], total: float):
+    """
+    Мінімалістичний інлайн-клавіатурний контрол кошика:
+    на кожен товар: ➖ [N шт] ➕ 🗑
+    + кнопки оформлення/очистки
+    """
+    kb = InlineKeyboardBuilder()
+
+    # рядки по товарах
+    for p in items:
+        pid = int(p["id"])
+        qty = int(cart.get(str(pid), 0) or 0)
+        if qty <= 0:
+            continue
+
+        kb.button(text="➖", callback_data=f"cart:dec:{pid}")
+        kb.button(text=f"{qty} шт", callback_data="noop")
+        kb.button(text="➕", callback_data=f"cart:inc:{pid}")
+        kb.button(text="🗑", callback_data=f"cart:rm:{pid}")
+        kb.adjust(4)
+
+    # дії
+    kb.button(text="🧾 Оформити замовлення", callback_data="checkout")
+    kb.button(text="🗑 Очистити", callback_data="clear")
+    kb.adjust(1)
+
+    return kb.as_markup()
+
+
+async def _render_cart_text(d: dict, uid: int) -> tuple[str, float, list[dict], dict]:
+    cart = _cart_dict(d, uid)
+
+    items: list[dict] = []
+    for pid_str, qty in cart.items():
+        if qty <= 0:
+            continue
+        p = find_product(d, int(pid_str))
+        if p:
+            items.append(p)
+
+    total = cart_total(d, cart)  # ✅ тепер cart_total приймає dict
+    txt = cart_summary(d, items, cart)  # ✅ оновимо cart_summary (нижче)
+    return txt, total, items, cart
 
 
 # ===================== PAY (SIMULATION) =====================
