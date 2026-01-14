@@ -139,9 +139,10 @@ def product_short(p: Dict[str, Any]) -> str:
 
     return f"• {b(name)} ({code(f'#{pid}')}) — {b(money_uah(base))}"
 
-def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
+def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[str, int]) -> str:
     """
-    Гарне відображення кошика (HTML). items = список продуктів (dict).
+    Гарне відображення кошика (HTML).
+    cart: dict[str(pid)] = qty
     """
     now = _now_ts()
     total = 0.0
@@ -155,11 +156,22 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
 
     lines.append("")
     for p in items:
+        pid = str(p.get("id", ""))
+        qty = int(cart.get(pid, 0) or 0)
+        if qty <= 0:
+            continue
+
+        # ціна за 1
         if is_promo_active(p, now_ts=now):
-            total += float(p.get("promo_price") or 0)
+            one = float(p.get("promo_price") or 0)
         else:
-            total += float(p.get("base_price", p.get("price", 0)) or 0)
-        lines.append(product_short(p))
+            one = float(p.get("base_price", p.get("price", 0)) or 0)
+
+        sub = one * qty
+        total += sub
+
+        name = esc(str(p.get("name", "Товар")))
+        lines.append(f"• {b(name)}  × {b(str(qty))}  — {b(money_uah(sub))}")
 
     lines.append("")
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
