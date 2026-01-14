@@ -483,63 +483,58 @@ def _cart_pages_count(items_count: int) -> int:
 
 
 def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
-    """
-    Макет:
-    | Товар1 | Товар2 |
-    | - qty + | - qty + |
-    (пейджер)
-    + checkout/clear
-    """
     kb = InlineKeyboardBuilder()
 
-    # ---- row 1: names (2 columns) ----
+    # --- Row 1: names (2 columns) ---
     if page_items:
-        btns = []
+        row = []
         for p in page_items:
             pid = int(p["id"])
             name = str(p.get("name", "Товар"))
-            # коротко, щоб не ламало рядок
             if len(name) > 18:
                 name = name[:18] + "…"
-            btns.append((f"🧾 {name} #{pid}", f"cart:open:{pid}:{page}"))
+            row.append(types.InlineKeyboardButton(
+                text=f"🧾 {name} #{pid}",
+                callback_data=f"cart:open:{pid}:{page}"
+            ))
+        kb.row(*row)  # ✅ рівно 1 рядок
 
-        # рівно 2 колонки: якщо 1 товар — просто 1 кнопка
-        for text, cb in btns:
-            kb.button(text=text, callback_data=cb)
-        kb.adjust(2)
-
-        # ---- row 2: controls (6 buttons) ----
-        # ➖ qty ➕  |  ➖ qty ➕
+        # --- Row 2: controls ([- qty +] ×2) ---
+        row = []
         for p in page_items:
             pid = int(p["id"])
             qty = int(cart.get(str(pid), 0) or 0)
-            kb.button(text="➖", callback_data=f"cart:dec:{pid}:{page}")
-            kb.button(text=f"{qty}", callback_data="noop")
-            kb.button(text="➕", callback_data=f"cart:inc:{pid}:{page}")
 
-        # якщо на сторінці 1 товар — буде 3 кнопки, норм
-        kb.adjust(6)  # спробує тримати все в одному рядку, коли 2 товари
+            row += [
+                types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}:{page}"),
+                types.InlineKeyboardButton(text=str(qty), callback_data="noop"),
+                types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}:{page}"),
+            ]
+        kb.row(*row)  # ✅ все в 1 рядок
 
-        # ---- optional remove row (мінімалізм): робимо 🗑 окремо на товар ----
-        # щоб не “пилити” основний ряд
+        # --- Row 3: remove (🗑 ×2) ---
+        row = []
         for p in page_items:
             pid = int(p["id"])
-            kb.button(text=f"🗑 Видалити #{pid}", callback_data=f"cart:rm:{pid}:{page}")
-        kb.adjust(2)
+            row.append(types.InlineKeyboardButton(
+                text=f"🗑 Видалити #{pid}",
+                callback_data=f"cart:rm:{pid}:{page}"
+            ))
+        kb.row(*row)  # ✅ 1 рядок (2 колонки)
 
-    # ---- pager ----
+    # --- Row 4: pager ---
     prev_p = page - 1 if page > 0 else None
     next_p = page + 1 if page < pages - 1 else None
 
-    kb.button(text="⬅️", callback_data=f"cart:page:{prev_p}" if prev_p is not None else "noop")
-    kb.button(text=f"{page+1}/{pages}", callback_data="noop")
-    kb.button(text="➡️", callback_data=f"cart:page:{next_p}" if next_p is not None else "noop")
-    kb.adjust(3)
+    kb.row(
+        types.InlineKeyboardButton(text="⬅️", callback_data=f"cart:page:{prev_p}" if prev_p is not None else "noop"),
+        types.InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="noop"),
+        types.InlineKeyboardButton(text="➡️", callback_data=f"cart:page:{next_p}" if next_p is not None else "noop"),
+    )
 
-    # ---- actions ----
-    kb.button(text="🧾 Оформити замовлення", callback_data="checkout")
-    kb.button(text="🗑 Очистити", callback_data="clear")
-    kb.adjust(1)
+    # --- Row 5/6: actions ---
+    kb.row(types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
+    kb.row(types.InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"))
 
     return kb.as_markup()
 
