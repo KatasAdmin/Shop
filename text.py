@@ -31,7 +31,7 @@ def esc(text: str) -> str:
     )
 
 def spacer() -> str:
-    return "━━━━━━━━━━━━━━━━━━━━"
+    return ""
 
 
 # ---------- time / promo ----------
@@ -130,8 +130,7 @@ def product_card(p: Dict[str, Any]) -> str:
         lines.append(f"📝 {b('Опис')}")
         lines.append(i(desc))
 
-    lines.append("")
-    lines.append(spacer())
+    # ✅ НІЯКИХ ЛІНІЙ / РОЗДІЛЮВАЧІВ ВНИЗУ
     return "\n".join(lines)
 
 def product_short(p: Dict[str, Any]) -> str:
