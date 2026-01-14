@@ -1,4 +1,3 @@
-# text.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -29,9 +28,6 @@ def esc(text: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#39;")
     )
-
-def spacer() -> str:
-    return ""
 
 
 # ---------- time / promo ----------
@@ -130,7 +126,6 @@ def product_card(p: Dict[str, Any]) -> str:
         lines.append(f"📝 {b('Опис')}")
         lines.append(i(desc))
 
-    # ✅ НІЯКИХ ЛІНІЙ / РОЗДІЛЮВАЧІВ ВНИЗУ
     return "\n".join(lines)
 
 def product_short(p: Dict[str, Any]) -> str:
@@ -153,12 +148,12 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
 
     lines: List[str] = []
     lines.append(f"🧺 {b('Кошик')}")
-    lines.append(spacer())
 
     if not items:
         lines.append("Кошик порожній.")
         return "\n".join(lines)
 
+    lines.append("")
     for p in items:
         if is_promo_active(p, now_ts=now):
             total += float(p.get("promo_price") or 0)
@@ -167,7 +162,6 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
         lines.append(product_short(p))
 
     lines.append("")
-    lines.append(spacer())
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
     return "\n".join(lines)
 
@@ -176,21 +170,17 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     status = str(order.get("status", "new"))
 
     status_map = {
-    "paid": "🟢 Оплачено",
-    "prepay": "🟣 Передплата",
-
-    "in_work": "🟡 В роботі",
-    "shipped": "🚚 Відправлено",
-
-    "picked": "✅ Забрав (продано)",
-    "not_picked": "❌ Не забрав",
-    "returned": "🔁 Повернуто",
-
-    "done": "✅ Завершено",
-
-    "new": "🆕 Нове",
-    "pending": "⏳ Очікує оплату",
-}
+        "paid": "🟢 Оплачено",
+        "prepay": "🟣 Передплата",
+        "in_work": "🟡 В роботі",
+        "shipped": "🚚 Відправлено",
+        "picked": "✅ Забрав (продано)",
+        "not_picked": "❌ Не забрав",
+        "returned": "🔁 Повернуто",
+        "done": "✅ Завершено",
+        "new": "🆕 Нове",
+        "pending": "⏳ Очікує оплату",
+    }
     st = status_map.get(status, status)
 
     delivery = order.get("delivery", {}) or {}
@@ -213,7 +203,6 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
     lines.append(f"{b('Статус')}: {b(st)}")
     lines.append(f"{b('User ID')}: {code(str(order.get('user_id', '')))}")
     lines.append("")
-    lines.append(spacer())
 
     lines.append(f"🛍 {b('Товари')}")
     for p in products:
@@ -221,19 +210,24 @@ def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: Li
 
     lines.append("")
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
-    lines.append(spacer())
     lines.append("")
 
     lines.append(f"🚚 {b('Доставка')}")
-    if cname: lines.append(f"👤 {b('Імʼя')}: {cname}")
-    if phone: lines.append(f"📞 {b('Телефон')}: {phone}")
-    if city: lines.append(f"🏙 {b('Місто')}: {city}")
-    if np_branch: lines.append(f"📦 {b('НП')}: {np_branch}")
-    if comment: lines.append(f"📝 {b('Коментар')}: {i(comment)}")
+    if cname:
+        lines.append(f"👤 {b('Імʼя')}: {cname}")
+    if phone:
+        lines.append(f"📞 {b('Телефон')}: {phone}")
+    if city:
+        lines.append(f"🏙 {b('Місто')}: {city}")
+    if np_branch:
+        lines.append(f"📦 {b('НП')}: {np_branch}")
+    if comment:
+        lines.append(f"📝 {b('Коментар')}: {i(comment)}")
 
-        # ✅ ТТН / трек-номер
+    # ✅ ТТН / трек-номер
     ttn = (order.get("ttn") or "").strip()
     if ttn:
         lines.append("")
         lines.append(f"📮 {b('ТТН')}: {code(ttn)}")
+
     return "\n".join(lines)
