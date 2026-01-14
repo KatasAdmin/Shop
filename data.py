@@ -1,11 +1,10 @@
-# data.py
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional
-
-from text import is_promo_active
+from typing import Dict, Any, Optional
 
 from sqlalchemy.dialects.postgresql import insert
+
+from text import is_promo_active
 
 from config import SHOP_STATE_KEY
 from db import session_scope
@@ -21,7 +20,7 @@ def default_data() -> Dict[str, Any]:
         "favorites": {},
         "hits": [],
         "users": {},
-        "user_tags": {},   # ✅ нове: характер/мітки
+        "user_tags": {},   # ✅ характер/мітки
     }
 
 
@@ -78,6 +77,20 @@ def find_product(data: Dict[str, Any], pid: int) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _unit_price(p: dict) -> float:
+    """
+    Повертає актуальну ціну одиниці:
+    - promo_price якщо акція активна
+    - інакше base_price (або price як fallback)
+    """
+    try:
+        if is_promo_active(p):
+            return float(p.get("promo_price") or 0) or float(p.get("base_price", p.get("price", 0)) or 0)
+        return float(p.get("base_price", p.get("price", 0)) or 0)
+    except Exception:
+        return 0.0
+
+
 def cart_total(d: dict, cart) -> float:
     """
     cart може бути:
@@ -86,18 +99,16 @@ def cart_total(d: dict, cart) -> float:
     """
     total = 0.0
 
-    # старий формат
+    # старий формат: list pid
     if isinstance(cart, list):
         for pid in cart:
             p = find_product(d, int(pid))
             if not p:
                 continue
-            price = float(p.get("promo_price") or 0) if is_promo_active(p) else float(p.get("base_price", p.get("price", 0)) or 0)
-            # якщо в тебе є промо логіка тут — врахуй її
-            total += float(p.get("promo_price") or 0) if (p.get("promo_price") and p.get("promo_price") > 0) else float(p.get("base_price", p.get("price", 0)) or 0)
+            total += _unit_price(p)
         return float(total)
 
-    # новий формат
+    # новий формат: dict pid->qty
     if isinstance(cart, dict):
         for pid_str, qty in cart.items():
             try:
@@ -107,11 +118,11 @@ def cart_total(d: dict, cart) -> float:
                 continue
             if qty_i <= 0:
                 continue
+
             p = find_product(d, pid_i)
             if not p:
                 continue
 
-            price = float(p.get("promo_price") or 0) if is_promo_active(p) else float(p.get("base_price", p.get("price", 0)) or 0)
-            total += price * qty_i
+            total += _unit_price(p) * qty_i
 
     return float(total)
