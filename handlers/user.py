@@ -1,3 +1,4 @@
+# handlers/user.py
 import time
 import re
 
@@ -5,7 +6,7 @@ from aiogram import Router, F, types, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from data import load_data, save_data, find_product, cart_total, next_order_id
 from states import OrderFSM
@@ -384,7 +385,7 @@ async def fav_toggle(cb: types.CallbackQuery):
     await save_data(d)
 
 
-# ===================== CART HELPERS =====================
+# ===================== CART (DICT pid->qty) =====================
 
 def _cart_dict(d: dict, uid: int) -> dict:
     """
@@ -423,55 +424,6 @@ def _cart_dict(d: dict, uid: int) -> dict:
     return d["carts"][key]
 
 
-def _short_btn_title(p: dict, max_len: int = 26) -> str:
-    t = str(p.get("name", "Товар")).strip()
-    if len(t) <= max_len:
-        return t
-    return t[: max_len - 1] + "…"
-
-
-def cart_controls_kb(cart: dict, items: list[dict], total: float) -> types.InlineKeyboardMarkup:
-    """
-    Мінімалістичний і читабільний кошик:
-
-    На кожен товар:
-      [ Назва товару ] [🗑]
-      [➖] [N шт] [➕]
-
-    + нижче:
-      [🧾 Оформити]
-      [🗑 Очистити]
-    """
-    kb = InlineKeyboardBuilder()
-
-    for p in items:
-        pid = int(p.get("id", 0) or 0)
-        qty = int(cart.get(str(pid), 0) or 0)
-        if pid <= 0 or qty <= 0:
-            continue
-
-        title = _short_btn_title(p)
-
-        # Рядок 1: назва (відкриває картку) + смітник
-        kb.row(
-            InlineKeyboardButton(text=f"🧺 {title}", callback_data=f"cart:show:{pid}"),
-            InlineKeyboardButton(text="🗑", callback_data=f"cart:rm:{pid}"),
-        )
-
-        # Рядок 2: мінус / qty / плюс
-        kb.row(
-            InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}"),
-            InlineKeyboardButton(text=f"{qty} шт", callback_data="noop"),
-            InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}"),
-        )
-
-    # Дії
-    kb.row(InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
-    kb.row(InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"))
-
-    return kb.as_markup()
-
-
 async def _render_cart_text(d: dict, uid: int) -> tuple[str, float, list[dict], dict]:
     cart = _cart_dict(d, uid)
 
@@ -488,7 +440,45 @@ async def _render_cart_text(d: dict, uid: int) -> tuple[str, float, list[dict], 
     return txt, total, items, cart
 
 
-# ===================== CART ACTIONS =====================
+def cart_controls_kb(cart: dict, items: list[dict], total: float):
+    """
+    UX:
+    [🧺 Назва · #ID] [🗑]
+    [➖] [N шт] [➕]
+    + дії внизу
+    """
+    kb = InlineKeyboardBuilder()
+
+    for p in items:
+        pid = int(p["id"])
+        qty = int(cart.get(str(pid), 0) or 0)
+        if qty <= 0:
+            continue
+
+        name = str(p.get("name", "Товар")).strip()
+        title = (name[:22] + "…") if len(name) > 23 else name
+        kb.row(
+            types.InlineKeyboardButton(text=f"🧺 {title} · #{pid}", callback_data=f"cart:open:{pid}"),
+            types.InlineKeyboardButton(text="🗑", callback_data=f"cart:rm:{pid}"),
+        )
+        kb.row(
+            types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}"),
+            types.InlineKeyboardButton(text=f"{qty} шт", callback_data="noop"),
+            types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}"),
+        )
+
+    kb.row(types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
+    kb.row(types.InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"))
+
+    return kb.as_markup()
+
+
+def back_to_cart_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад до кошика", callback_data="cart:view")
+    kb.adjust(1)
+    return kb.as_markup()
+
 
 @router.callback_query(F.data.startswith("add:"))
 async def add_cart(cb: types.CallbackQuery):
@@ -510,11 +500,58 @@ async def show_cart(m: types.Message):
     if not items:
         return await m.answer("Кошик порожній", reply_markup=main_menu())
 
-    await m.answer(
-        txt,
-        parse_mode="HTML",
-        reply_markup=cart_controls_kb(cart, items, total)
-    )
+    await m.answer(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+
+
+@router.callback_query(F.data == "cart:view")
+async def cart_view_same_message(cb: types.CallbackQuery):
+    d = await load_data()
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    try:
+        await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cart:open:"))
+async def cart_open_product_in_same_message(cb: types.CallbackQuery):
+    d = await load_data()
+    pid = int(cb.data.split(":")[2])
+
+    p = find_product(d, pid)
+    if not p:
+        return await cb.answer("Товар не знайдено", show_alert=True)
+
+    txt = product_card(p)
+    photos = p.get("photos", []) or []
+
+    # показуємо товар в тому ж повідомленні
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=back_to_cart_kb())
+        except Exception:
+            # якщо це було текстове повідомлення і edit_media не пройшов
+            try:
+                await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=back_to_cart_kb())
+            except Exception:
+                pass
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=back_to_cart_kb())
+        except Exception:
+            pass
+
+    await cb.answer()
 
 
 @router.callback_query(F.data == "clear")
@@ -529,27 +566,6 @@ async def clear_cart(cb: types.CallbackQuery):
         await cb.message.edit_text("Кошик порожній", reply_markup=None)
     except Exception:
         pass
-
-
-@router.callback_query(F.data.startswith("cart:show:"))
-async def cart_show_product(cb: types.CallbackQuery):
-    d = await load_data()
-    pid = int(cb.data.split(":")[2])
-
-    p = find_product(d, pid)
-    if not p:
-        return await cb.answer("Товар не знайдено", show_alert=True)
-
-    txt = product_card(p)
-    kb = product_kb(pid, fav=is_fav(d, cb.from_user.id, pid))
-    photos = p.get("photos", []) or []
-
-    if photos:
-        await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
-    else:
-        await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
-
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cart:inc:"))
@@ -702,7 +718,6 @@ async def order_finish(m: types.Message, state: FSMContext):
     st["comment"] = comment
 
     d = await load_data()
-
     cart = _cart_dict(d, m.from_user.id)
     if not cart:
         await state.clear()
