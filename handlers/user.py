@@ -419,30 +419,10 @@ async def clear_cart(cb: types.CallbackQuery):
     await save_data(d)
     await cb.answer("Очищено 🗑")
 
-    # красиво: оновимо повідомлення якщо можна
     try:
         await cb.message.edit_text("Кошик порожній", reply_markup=None)
     except Exception:
         pass
-
-    items = []
-    for pid in cart:
-        p = find_product(d, int(pid))
-        if p:
-            items.append(p)
-
-    total = cart_total(d, cart)
-    txt = cart_summary(d, items)
-    await m.answer(txt, parse_mode="HTML", reply_markup=cart_kb(total))
-
-
-@router.callback_query(F.data == "clear")
-async def clear_cart(cb: types.CallbackQuery):
-    d = await load_data()
-    d.setdefault("carts", {})
-    d["carts"][str(cb.from_user.id)] = []
-    await save_data(d)
-    await cb.answer("Очищено 🗑")
 
 
 @router.callback_query(F.data.startswith("cart:inc:"))
@@ -760,7 +740,7 @@ async def pay_full(cb: types.CallbackQuery, bot: Bot):
     order["paid_ts"] = int(time.time())
 
     d.setdefault("carts", {})
-    d["carts"][str(order["user_id"])] = []
+    d["carts"][str(order["user_id"])] = {}
     await save_data(d)
 
     await cb.message.answer(
@@ -799,7 +779,7 @@ async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
     order["prepay_ts"] = int(time.time())
 
     d.setdefault("carts", {})
-    d["carts"][str(order["user_id"])] = []
+    d["carts"][str(order["user_id"])] = {}
     await save_data(d)
 
     await cb.message.answer(
