@@ -389,6 +389,80 @@ async def fav_toggle(cb: types.CallbackQuery):
     await save_data(d)
 
 
+def cart_item_kb(pid: int, qty: int, page: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    # рядок керування qty
+    kb.row(
+        types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}:{page}"),
+        types.InlineKeyboardButton(text=f"{qty} шт", callback_data="noop"),
+        types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}:{page}"),
+    )
+
+    # швидке видалення (коротко)
+    kb.row(
+        types.InlineKeyboardButton(text="🗑", callback_data=f"cart:rm:{pid}:{page}")
+    )
+
+    # назад у кошик (в той самий page)
+    kb.row(
+        types.InlineKeyboardButton(text="🧺 Назад в кошик", callback_data=f"cart:page:{page}")
+    )
+
+    return kb.as_markup()
+
+
+async def _show_cart_item(cb: types.CallbackQuery, pid: int, page: int):
+    d = await load_data()
+    p = find_product(d, pid)
+    if not p:
+        return await cb.answer("Товар не знайдено", show_alert=True)
+
+    cart = _cart_dict(d, cb.from_user.id)
+    qty = int(cart.get(str(pid), 0) or 0)
+    if qty <= 0:
+        return await cb.answer("Цього товару вже нема в кошику", show_alert=True)
+
+    txt = product_card(p)  # твій text.py вже гарно робить ціну/акцію
+    kb = cart_item_kb(pid, qty, page)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=kb)
+        except Exception:
+            # fallback: видалити і надіслати нове (Telegram іноді не дає edit_media)
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cart:open:"))
+async def cart_open_item(cb: types.CallbackQuery):
+    # формат: cart:open:PID:PAGE
+    try:
+        _, _, pid_str, page_str = cb.data.split(":")
+        pid = int(pid_str)
+        page = int(page_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
+    await _show_cart_item(cb, pid, page)
+    await cb.answer()
+
+
 # ===================== CART (PAGED, 2 ITEMS) =====================
 
 def _money_uah(x) -> str:
