@@ -92,6 +92,7 @@ def cart_total(d: dict, cart) -> float:
             p = find_product(d, int(pid))
             if not p:
                 continue
+            price = float(p.get("promo_price") or 0) if is_promo_active(p) else float(p.get("base_price", p.get("price", 0)) or 0)
             # якщо в тебе є промо логіка тут — врахуй її
             total += float(p.get("promo_price") or 0) if (p.get("promo_price") and p.get("promo_price") > 0) else float(p.get("base_price", p.get("price", 0)) or 0)
         return float(total)
@@ -110,7 +111,7 @@ def cart_total(d: dict, cart) -> float:
             if not p:
                 continue
 
-            price = float(p.get("promo_price") or 0) if (p.get("promo_price") and p.get("promo_price") > 0) else float(p.get("base_price", p.get("price", 0)) or 0)
+            price = float(p.get("promo_price") or 0) if is_promo_active(p) else float(p.get("base_price", p.get("price", 0)) or 0)
             total += price * qty_i
 
     return float(total)
