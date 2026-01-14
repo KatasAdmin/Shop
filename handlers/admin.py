@@ -53,15 +53,36 @@ def _ensure_product_schema(p: dict) -> None:
 
 def _order_products(d: dict, o: dict) -> list[dict]:
     """
-    Повертає список товарів замовлення (з нормалізацією полів).
-    Потрібно для order_premium_text, щоб суми/акції/назви завжди були коректні.
+    items може бути:
+    - [pid, pid, ...] (старий)
+    - [{"pid": 12, "qty": 2}, ...] (новий)
+    Повертаємо список product dict, додаючи _qty для відображення.
     """
     products: list[dict] = []
-    for pid in (o.get("items", []) or []):
-        p = find_product(d, int(pid))
+    for it in (o.get("items", []) or []):
+        pid_int = None
+        qty = 1
+
+        if isinstance(it, dict):
+            try:
+                pid_int = int(it.get("pid"))
+                qty = int(it.get("qty", 1) or 1)
+            except Exception:
+                continue
+        else:
+            try:
+                pid_int = int(it)
+                qty = 1
+            except Exception:
+                continue
+
+        p = find_product(d, pid_int)
         if p:
             _ensure_product_schema(p)
-            products.append(p)
+            pp = dict(p)
+            pp["_qty"] = max(1, qty)
+            products.append(pp)
+
     return products
     
 
