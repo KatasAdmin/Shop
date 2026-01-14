@@ -51,18 +51,30 @@ def _order_products(data: Dict[str, Any], order: Dict[str, Any]) -> List[Dict[st
 
 
 def format_order_text(data: Dict[str, Any], order: Dict[str, Any]) -> str:
-    """
-    ✅ Текст ДЛЯ КЛІЄНТА (без SKU/Barcode)
-    Використовується в notify_user / повідомленнях покупцю.
-    """
-    products = _order_products(data, order)
-    return order_user_text(data, order, products)
+    products: List[Dict[str, Any]] = []
 
+    for it in (order.get("items", []) or []):
+        pid_int = None
+        qty = 1
 
-def format_order_text_staff(data: Dict[str, Any], order: Dict[str, Any]) -> str:
-    """
-    ✅ Текст ДЛЯ МЕНЕДЖЕРА (зі SKU/Barcode)
-    Можеш використовувати коли шлеш в адмінку/менеджерам.
-    """
-    products = _order_products(data, order)
+        if isinstance(it, dict):
+            try:
+                pid_int = int(it.get("pid"))
+                qty = int(it.get("qty", 1) or 1)
+            except Exception:
+                continue
+        else:
+            try:
+                pid_int = int(it)
+                qty = 1
+            except Exception:
+                continue
+
+        p = find_product(data, pid_int)
+        if p:
+            # копія + qty, щоб text.py міг показати ×qty
+            pp = dict(p)
+            pp["_qty"] = max(1, qty)
+            products.append(pp)
+
     return order_premium_text(data, order, products)
