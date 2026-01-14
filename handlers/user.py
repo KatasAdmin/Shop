@@ -597,7 +597,8 @@ async def order_finish(m: types.Message, state: FSMContext):
 
     d = await load_data()
     uid_str = str(m.from_user.id)
-    cart = d.get("carts", {}).get(uid_str, [])
+
+    cart = _cart_dict(d, m.from_user.id)   # ✅ завжди dict pid->qty
     if not cart:
         await state.clear()
         return await m.answer("Кошик порожній. Почніть знову.", reply_markup=main_menu())
@@ -605,13 +606,25 @@ async def order_finish(m: types.Message, state: FSMContext):
     total = cart_total(d, cart)
     oid = next_order_id(d)
 
+# ✅ запаковуємо items з кількістю
+    items_pack = []
+    for pid_str, qty in (cart or {}).items():
+        try:
+            pid_i = int(pid_str)
+            qty_i = int(qty)
+        except Exception:
+            continue
+        if qty_i > 0:
+            items_pack.append({"pid": pid_i, "qty": qty_i})
+
     d.setdefault("orders", [])
     d["orders"].append({
         "id": oid,
         "user_id": m.from_user.id,
         "user_username": (m.from_user.username or ""),
         "user_full_name": (m.from_user.full_name or ""),
-        "items": list(cart),
+
+        "items": items_pack,          # ✅ ОЦЕ ПУНКТ 4 (qty збережено)
         "total": float(total),
 
         "status": "pending",
