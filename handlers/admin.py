@@ -45,6 +45,12 @@ def _ensure_product_schema(p: dict) -> None:
     if "promo_until_ts" not in p:
         p["promo_until_ts"] = None
 
+    # ✅ NEW
+    if "sku" not in p:
+        p["sku"] = ""
+    if "barcode" not in p:
+        p["barcode"] = ""
+
 
 def _order_products(d: dict, o: dict) -> list[dict]:
     """
@@ -1104,9 +1110,15 @@ async def prod_name(m: types.Message, state: FSMContext):
     name = (m.text or "").strip()
     if not name:
         return await m.answer("Введіть назву текстом.")
+
     await state.update_data(name=name)
-    await state.set_state(AdminFSM.prod_price)
-    await m.answer("Введіть ціну (наприклад 199.99):")
+    await state.set_state(AdminFSM.prod_sku)
+
+    await m.answer(
+        "Введіть <b>артикул (SKU)</b> для товару.\n"
+        "Якщо нема — напишіть <code>-</code>",
+        parse_mode="HTML"
+    )
 
 
 @router.message(AdminFSM.prod_price)
@@ -1124,6 +1136,21 @@ async def prod_price(m: types.Message, state: FSMContext):
     await state.update_data(price=price)
     await state.set_state(AdminFSM.prod_desc)
     await m.answer("Введіть опис (або '-' щоб пропустити):")
+
+
+@router.message(AdminFSM.prod_sku)
+async def prod_sku(m: types.Message, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, m.from_user.id):
+        return await m.answer("⛔️ Немає доступу")
+
+    sku = (m.text or "").strip()
+    if sku == "-":
+        sku = ""
+
+    await state.update_data(sku=sku)
+    await state.set_state(AdminFSM.prod_price)
+    await m.answer("Введіть ціну (наприклад 199.99):")
 
 
 @router.message(AdminFSM.prod_desc)
@@ -1174,10 +1201,15 @@ async def prod_done(m: types.Message, state: FSMContext):
     d["categories"].setdefault(cat, {})
     d["categories"][cat].setdefault(sub, [])
 
-    price = float(st["price"])
+    price = float(st["price"])  # ✅ важливо, щоб price існував
+
     product = {
         "id": pid,
         "name": st["name"],
+
+        "sku": st.get("sku", ""),   # ✅ артикул (для менеджера)
+        "barcode": "",              # ✅ поки пусто (на майбутнє інтеграції)
+
         "price": price,
         "base_price": price,
         "promo_price": 0,
