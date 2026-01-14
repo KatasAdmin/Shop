@@ -117,6 +117,14 @@ def price_line(p: Dict[str, Any]) -> str:
     return f"💰 {b(money_uah(base_v))}"
 
 
+def unit_price_str(p: Dict[str, Any], now_ts: Optional[int] = None) -> str:
+    base = float(p.get("base_price", p.get("price", 0)) or 0)
+    if is_promo_active(p, now_ts=now_ts):
+        promo = float(p.get("promo_price") or 0)
+        return f"{s_(money_uah(base))} → {b(money_uah(promo))}"
+    return b(money_uah(base))
+
+
 # ---------- product / cart / order formatting ----------
 
 def product_card(p: Dict[str, Any]) -> str:
@@ -181,9 +189,9 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[s
         name = esc(str(p.get("name", "Товар")))
         pid_show = code(f"#{pid}")
 
-        lines.append(
-            f"• {b(name)} ({pid_show}) — {b(money_uah(unit))} × {b(str(qty))} = {b(money_uah(line_total))}"
-        )
+    lines.append(
+        f"• {b(name)} ({pid_show}) — {unit_price_str(p, now_ts=now)} × {b(str(qty))} = {b(money_uah(line_total))}"
+    )
 
     lines.append("")
     lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
