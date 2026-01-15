@@ -182,20 +182,23 @@ def cart_summary(data: Dict[str, Any], items: List[Dict[str, Any]], cart: Dict[s
         if qty <= 0:
             continue
 
-        unit = _safe_float(p.get("promo_price") if is_promo_active(p, now_ts=now) else p.get("base_price", p.get("price", 0)))
-        line_total = unit * qty
-        total += line_total
+base_price = float(p.get("base_price", p.get("price", 0)) or 0)
+promo_on = is_promo_active(p, now_ts=now)
+promo_price = float(p.get("promo_price") or 0)
 
-        name = esc(str(p.get("name", "Товар")))
-        pid_show = code(f"#{pid}")
+if promo_on:
+    unit_text = f"{s_(money_uah(base_price))} → {b(money_uah(promo_price))}"
+    unit = promo_price
+else:
+    unit_text = b(money_uah(base_price))
+    unit = base_price
 
-    lines.append(
-        f"• {b(name)} ({pid_show}) — {unit_price_str(p, now_ts=now)} × {b(str(qty))} = {b(money_uah(line_total))}"
-    )
+line_total = unit * qty
+total += line_total
 
-    lines.append("")
-    lines.append(f"💳 {b('Разом')}: {b(money_uah(total))}")
-    return "\n".join(lines)
+lines.append(
+    f"• {b(name)} — {unit_text} × {b(str(qty))} = {b(money_uah(line_total))}"
+)
 
 
 def order_premium_text(data: Dict[str, Any], order: Dict[str, Any], products: List[Dict[str, Any]]) -> str:
