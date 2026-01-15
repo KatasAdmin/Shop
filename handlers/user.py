@@ -330,7 +330,7 @@ async def sub_back(cb: types.CallbackQuery):
 
 # ===================== HITS / FAVS =====================
 
-FAVS_PER_PAGE = 2  # ✅ 2 товари в ряд / на сторінку (як кошик)
+FAVS_PER_PAGE = 8  # ✅ 2 товари в ряд / на сторінку (як кошик)
 
 
 @router.message(F.text == "🔥 Хіти/Акції")
@@ -370,21 +370,22 @@ def _favs_pages_count(items_count: int) -> int:
 def favs_paged_kb(page_items: List[dict], page: int, pages: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
 
-    # --- Row 1: кнопки товарів (2 в ряд) ---
-    if page_items:
-        row = []
-        for p in page_items:
-            pid = int(p["id"])
-            name = str(p.get("name", "Товар"))
-            if len(name) > 18:
-                name = name[:18] + "…"
-            row.append(types.InlineKeyboardButton(
-                text=f"⭐ {name}",
-                callback_data=f"favs:open:{pid}:{page}"
-            ))
-        kb.row(*row)  # ✅ 1 рядок
+    # ✅ кнопки товарів (2 колонки, до 8 штук)
+    for p in page_items:
+        pid = int(p["id"])
+        name = str(p.get("name", "Товар"))
+        if len(name) > 18:
+            name = name[:18] + "…"
 
-    # --- Row 2: pager ---
+        kb.button(
+            text=f"⭐ {name}",
+            callback_data=f"favs:open:{pid}:{page}"
+        )
+
+    # зробить 2 колонки для всіх кнопок вище
+    kb.adjust(2)
+
+    # --- pager (окремим рядком) ---
     prev_p = page - 1 if page > 0 else None
     next_p = page + 1 if page < pages - 1 else None
 
@@ -423,26 +424,36 @@ async def _edit_favs(cb: types.CallbackQuery, page: int):
     d = await load_data()
     txt, page_items, page, pages = _render_favs_page(d, cb.from_user.id, page)
 
+    # якщо обране порожнє
     if not page_items:
+        # якщо ми зараз на фото-картці — краще видалити і надіслати текстом
+        if cb.message and cb.message.photo:
+            await _safe_delete(cb.message)
+            await cb.message.answer(txt, parse_mode="HTML")
+            return
+
         try:
             await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=None)
         except Exception:
             pass
         return
 
-    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=favs_paged_kb(page_items, page, pages))
+    # ✅ якщо зараз відкрита картка товару з фото — повертаємось новим повідомленням
+    if cb.message and cb.message.photo:
+        await _safe_delete(cb.message)
+        await cb.message.answer(
+            txt,
+            parse_mode="HTML",
+            reply_markup=favs_paged_kb(page_items, page, pages)
+        )
+        return
 
-
-# ✅ ЗАМІНА ТВОГО show_favs: тепер не спамить повідомленнями, а як кошик — 1 повідомлення + сторінки
-@router.message(F.text == "⭐ Обране")
-async def show_favs(m: types.Message):
-    d = await load_data()
-    txt, page_items, page, pages = _render_favs_page(d, m.from_user.id, 0)
-
-    if not page_items:
-        return await m.answer(txt, parse_mode="HTML")
-
-    await m.answer(txt, parse_mode="HTML", reply_markup=favs_paged_kb(page_items, page, pages))
+    # звичайний режим (коли ми в текстовому повідомленні списку)
+    await cb.message.edit_text(
+        txt,
+        parse_mode="HTML",
+        reply_markup=favs_paged_kb(page_items, page, pages)
+    )
 
 
 @router.callback_query(F.data.startswith("favs:page:"))
