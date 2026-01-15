@@ -885,7 +885,6 @@ def cart_item_kb(pid: int, qty: int, page: int) -> types.InlineKeyboardMarkup:
 
     kb.row(
         types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}:{page}"),
-        types.InlineKeyboardButton(text=f"{qty} шт", callback_data="noop"),
         types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}:{page}"),
     )
 
