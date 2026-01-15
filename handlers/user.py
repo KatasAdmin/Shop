@@ -527,7 +527,7 @@ def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
 
     # --- Row 5/6: actions ---
     kb.row(types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
-    kb.row(types.InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"))
+   
 
     return kb.as_markup()
 
