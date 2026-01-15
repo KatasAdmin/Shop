@@ -982,8 +982,12 @@ async def cart_inc(cb: types.CallbackQuery):
     cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
     await save_data(d)
 
-    # якщо ми в картці — оновлюємо її, якщо в кошику — оновлюємо кошик
-    if cb.message and (cb.message.photo or "🧺" not in (cb.message.text or "")):
+    # ✅ якщо в картці (фото або текст із "В кошику") — оновлюємо картку
+    is_card = bool(cb.message and (
+        cb.message.photo or ("🧺 <b>В кошику</b>:" in (cb.message.text or cb.message.caption or ""))
+    ))
+
+    if is_card:
         await _show_cart_item(cb, pid, page)
     else:
         await _show_cart_page(cb, page)
