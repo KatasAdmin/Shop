@@ -456,6 +456,17 @@ async def _edit_favs(cb: types.CallbackQuery, page: int):
     )
 
 
+@router.message(F.text == "⭐ Обране")
+async def show_favs(m: types.Message):
+    d = await load_data()
+    txt, page_items, page, pages = _render_favs_page(d, m.from_user.id, 0)
+
+    if not page_items:
+        return await m.answer(txt, parse_mode="HTML")
+
+    await m.answer(txt, parse_mode="HTML", reply_markup=favs_paged_kb(page_items, page, pages))
+
+
 @router.callback_query(F.data.startswith("favs:page:"))
 async def favs_page(cb: types.CallbackQuery):
     try:
