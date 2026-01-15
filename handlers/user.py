@@ -330,6 +330,9 @@ async def sub_back(cb: types.CallbackQuery):
 
 # ===================== HITS / FAVS =====================
 
+FAVS_PER_PAGE = 2  # ✅ 2 товари в ряд / на сторінку (як кошик)
+
+
 @router.message(F.text == "🔥 Хіти/Акції")
 async def hits(m: types.Message):
     d = await load_data()
@@ -348,31 +351,177 @@ async def hits(m: types.Message):
         await m.answer("Хіти є, але товари не знайдені.")
 
 
+# ---------- FAVS PAGED (як кошик, але без +/- і без delete) ----------
+
+def _favs_items_all(d: dict, uid: int) -> List[dict]:
+    favs = set(int(x) for x in user_favs(d, uid))
+    items: List[dict] = []
+    for pid in sorted(favs):
+        p = find_product(d, pid)
+        if p:
+            items.append(p)
+    return items
+
+
+def _favs_pages_count(items_count: int) -> int:
+    return max(1, int(math.ceil(items_count / FAVS_PER_PAGE)))
+
+
+def favs_paged_kb(page_items: List[dict], page: int, pages: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    # --- Row 1: кнопки товарів (2 в ряд) ---
+    if page_items:
+        row = []
+        for p in page_items:
+            pid = int(p["id"])
+            name = str(p.get("name", "Товар"))
+            if len(name) > 18:
+                name = name[:18] + "…"
+            row.append(types.InlineKeyboardButton(
+                text=f"⭐ {name}",
+                callback_data=f"favs:open:{pid}:{page}"
+            ))
+        kb.row(*row)  # ✅ 1 рядок
+
+    # --- Row 2: pager ---
+    prev_p = page - 1 if page > 0 else None
+    next_p = page + 1 if page < pages - 1 else None
+
+    kb.row(
+        types.InlineKeyboardButton(text="⬅️", callback_data=f"favs:page:{prev_p}" if prev_p is not None else "noop"),
+        types.InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="noop"),
+        types.InlineKeyboardButton(text="➡️", callback_data=f"favs:page:{next_p}" if next_p is not None else "noop"),
+    )
+
+    return kb.as_markup()
+
+
+def _render_favs_page(d: dict, uid: int, page: int) -> Tuple[str, List[dict], int, int]:
+    all_items = _favs_items_all(d, uid)
+
+    if not all_items:
+        return "⭐ <b>Обране</b>\n\nОбране порожнє.", [], 0, 1
+
+    pages = _favs_pages_count(len(all_items))
+    page = max(0, min(page, pages - 1))
+
+    start = page * FAVS_PER_PAGE
+    end = start + FAVS_PER_PAGE
+    page_items = all_items[start:end]
+
+    lines: List[str] = []
+    lines.append("⭐ <b>Обране</b>")
+    lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+    lines.append("")
+    lines.append("Натисніть на товар, щоб відкрити картку 👇")
+
+    return "\n".join(lines), page_items, page, pages
+
+
+async def _edit_favs(cb: types.CallbackQuery, page: int):
+    d = await load_data()
+    txt, page_items, page, pages = _render_favs_page(d, cb.from_user.id, page)
+
+    if not page_items:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=favs_paged_kb(page_items, page, pages))
+
+
+# ✅ ЗАМІНА ТВОГО show_favs: тепер не спамить повідомленнями, а як кошик — 1 повідомлення + сторінки
 @router.message(F.text == "⭐ Обране")
 async def show_favs(m: types.Message):
     d = await load_data()
-    favs = set(int(x) for x in user_favs(d, m.from_user.id))
-    if not favs:
-        return await m.answer("Обране порожнє.")
+    txt, page_items, page, pages = _render_favs_page(d, m.from_user.id, 0)
 
-    any_sent = False
-    for pid in favs:
-        p = find_product(d, int(pid))
-        if p:
-            any_sent = True
-            await send_product(m, d, m.from_user.id, p)
+    if not page_items:
+        return await m.answer(txt, parse_mode="HTML")
 
-    if not any_sent:
-        await m.answer("Обране є, але товари не знайдені.")
+    await m.answer(txt, parse_mode="HTML", reply_markup=favs_paged_kb(page_items, page, pages))
 
 
-@router.callback_query(F.data.startswith("fav:"))
-async def fav_toggle(cb: types.CallbackQuery):
+@router.callback_query(F.data.startswith("favs:page:"))
+async def favs_page(cb: types.CallbackQuery):
+    try:
+        page = int(cb.data.split(":")[2])
+    except Exception:
+        page = 0
+    await _edit_favs(cb, page)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("favs:open:"))
+async def favs_open(cb: types.CallbackQuery):
+    # favs:open:PID:PAGE
+    try:
+        _, _, pid_str, page_str = cb.data.split(":")
+        pid = int(pid_str)
+        page = int(page_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
+    d = await load_data()
+    p = find_product(d, pid)
+    if not p:
+        return await cb.answer("Товар не знайдено", show_alert=True)
+
+    txt = product_card(p)
+
+    # ✅ визначаємо чи вже в обраному
+    fav_now = is_fav(d, cb.from_user.id, pid)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад в обране", callback_data=f"favs:page:{page}")
+
+    # ✅ ключ: page зберігаємо у callback
+    if fav_now:
+        kb.button(text="❌ З обраного", callback_data=f"favp:off:{pid}:{page}")
+    else:
+        kb.button(text="⭐ В обране", callback_data=f"favp:on:{pid}:{page}")
+
+    kb.adjust(1, 1)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=kb.as_markup())
+        except Exception:
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb.as_markup())
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        except Exception:
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("favp:"))
+async def fav_toggle_in_card(cb: types.CallbackQuery):
+    # favp:on:PID:PAGE  |  favp:off:PID:PAGE
+    try:
+        _, mode, pid_str, page_str = cb.data.split(":")
+        pid = int(pid_str)
+        page = int(page_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
     d = await load_data()
     uid = cb.from_user.id
-
-    _, mode, pid_str = cb.data.split(":")
-    pid = int(pid_str)
 
     favs = user_favs(d, uid)
     sset = set(int(x) for x in favs)
@@ -387,6 +536,105 @@ async def fav_toggle(cb: types.CallbackQuery):
     d["favorites"][str(uid)] = list(sset)
     await save_data(d)
 
+    # ✅ просто перемальовуємо цю ж картку, не повертаємось в список
+    p = find_product(d, pid)
+    if not p:
+        return
+
+    txt = product_card(p)
+
+    fav_now = is_fav(d, uid, pid)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад в обране", callback_data=f"favs:page:{page}")
+    if fav_now:
+        kb.button(text="❌ З обраного", callback_data=f"favp:off:{pid}:{page}")
+    else:
+        kb.button(text="⭐ В обране", callback_data=f"favp:on:{pid}:{page}")
+    kb.adjust(1, 1)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=kb.as_markup())
+        except Exception:
+            # якщо edit_media не дав — просто міняємо клавіатуру, а текст хай лишається
+            try:
+                await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
+            except Exception:
+                pass
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        except Exception:
+            try:
+                await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
+            except Exception:
+                pass
+
+
+# ✅ апгрейд: якщо тиснуть "❌ З обраного" прямо в картці — одразу повертаємо в список "Обране"
+@router.callback_query(F.data.startswith("fav:"))
+async def fav_toggle(cb: types.CallbackQuery):
+    """
+    Загальний toggle для:
+    - каталогу (product_page_kb)
+    - хітів/акцій (send_product)
+    НЕ чіпає "картку обраного" — там використовується favp:...
+    """
+    d = await load_data()
+    uid = cb.from_user.id
+
+    try:
+        _, mode, pid_str = cb.data.split(":")
+        pid = int(pid_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
+    favs = user_favs(d, uid)
+    sset = set(int(x) for x in favs)
+
+    if mode == "on":
+        sset.add(pid)
+        await cb.answer("⭐ Додано в обране")
+    else:
+        sset.discard(pid)
+        await cb.answer("❌ Прибрано з обраного")
+
+    d["favorites"][str(uid)] = list(sset)
+    await save_data(d)
+
+    # ✅ Оновлюємо КНОПКИ на поточному повідомленні (без переходів)
+    # Якщо це сторінка каталогу (page:cat:sub:i) — просто перемальовуємо її
+    try:
+        if cb.message and cb.message.reply_markup:
+            # якщо callback прийшов з каталогу (там є page:...)
+            if cb.message.reply_markup.inline_keyboard:
+                # намагаємось визначити контекст по callback кнопок (page:)
+                all_cb = []
+                for row in cb.message.reply_markup.inline_keyboard:
+                    for b in row:
+                        if b.callback_data:
+                            all_cb.append(b.callback_data)
+
+                # якщо є кнопка page:... — це каталог з посторінковим переглядом
+                page_btn = next((x for x in all_cb if x.startswith("page:")), None)
+                if page_btn:
+                    # page:cat:sub:i
+                    _, cat, sub, i_str = page_btn.split(":", 3)
+                    await show_product_page(cb, cat, sub, int(i_str))
+                    return
+
+            # інакше (хіти/акції або надіслана картка) — просто міняємо клавіатуру
+            # Витягаємо товар і ставимо правильну кнопку (⭐/❌)
+            p = find_product(d, pid)
+            if p:
+                kb = product_kb(pid, fav=is_fav(d, uid, pid))
+                await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        # якщо Telegram не дав edit — нічого страшного
+        pass
 
 # ===================== CART (PAGED, 2 ITEMS) =====================
 
