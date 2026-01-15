@@ -1456,17 +1456,34 @@ async def hist_open(cb: types.CallbackQuery):
     if not o or int(o.get("user_id", -1)) != int(cb.from_user.id):
         return await cb.answer("Замовлення не знайдено", show_alert=True)
 
-    txt = format_order_text(d, o)
-    created = _fmt_dt(int(o.get("created_ts", 0) or 0))
-    status = str(o.get("status", "") or "")
-    total = float(o.get("total", 0) or 0)
+    # ---- ЧИСТИЙ ХЕДЕР ДЛЯ КЛІЄНТА ----
 
-    # невеликий “шапка-бонус”
-    head = (
-        f"📦 <b>Замовлення #{int(o.get('id', 0) or 0)}</b>\n"
-        f"<i>{_status_emoji(status)} Статус: {status} · 🕒 {created} · 💳 {int(total) if float(total).is_integer() else f'{total:.2f}'} ₴</i>\n\n"
-    )
-    full_txt = head + txt
+def _ua_status(s: str) -> str:
+    return {
+        "pending": "Очікує",
+        "paid": "Оплачено",
+        "prepay": "Передплата",
+        "in_work": "В роботі",
+        "done": "Виконано",
+        "returned": "Повернуто",
+        "canceled": "Скасовано",
+    }.get(s, s)
+
+created = _fmt_dt(int(o.get("created_ts", 0) or 0))
+status_raw = str(o.get("status", "") or "")
+status_ua = _ua_status(status_raw)
+total = float(o.get("total", 0) or 0)
+username = o.get("user_full_name") or o.get("user_username") or "—"
+
+header = (
+    f"📦 <b>Замовлення #{int(o.get('id', 0) or 0)}</b>\n"
+    f"🕒 {created}\n"
+    f"💳 Сума: <b>{int(total) if float(total).is_integer() else f'{total:.2f}'} ₴</b>\n"
+    f"🔁 Статус: <b>{status_ua}</b>\n"
+    f"👤 Покупець: <b>{username}</b>\n\n"
+)
+
+full_txt = header + format_order_text(d, o)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад в історію", callback_data=f"hist:page:{page}")
