@@ -1317,6 +1317,19 @@ def _status_emoji(s: str) -> str:
         return "❌"
     return "📦"
 
+def _ua_status(s: str) -> str:
+    s = (s or "").lower()
+    return {
+        "pending": "Очікує",
+        "paid": "Оплачено",
+        "prepay": "Передплата",
+        "in_work": "В роботі",
+        "done": "Виконано",
+        "returned": "Повернуто",
+        "canceled": "Скасовано",
+        "cancelled": "Скасовано",
+    }.get(s, s)
+
 def _orders_all_for_user(d: dict, uid: int) -> List[dict]:
     orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
     # newest first
@@ -1456,49 +1469,46 @@ async def hist_open(cb: types.CallbackQuery):
     if not o or int(o.get("user_id", -1)) != int(cb.from_user.id):
         return await cb.answer("Замовлення не знайдено", show_alert=True)
 
-    # ---- ЧИСТИЙ ХЕДЕР ДЛЯ КЛІЄНТА ----
+    created = _fmt_dt(int(o.get("created_ts", 0) or 0))
+    status_raw = str(o.get("status", "") or "")
+    status_ua = _ua_status(status_raw)
+    total = float(o.get("total", 0) or 0)
+    username = o.get("user_full_name") or o.get("user_username") or "—"
 
-def _ua_status(s: str) -> str:
-    return {
-        "pending": "Очікує",
-        "paid": "Оплачено",
-        "prepay": "Передплата",
-        "in_work": "В роботі",
-        "done": "Виконано",
-        "returned": "Повернуто",
-        "canceled": "Скасовано",
-    }.get(s, s)
+    total_txt = f"{int(total)}" if float(total).is_integer() else f"{total:.2f}"
 
-created = _fmt_dt(int(o.get("created_ts", 0) or 0))
-status_raw = str(o.get("status", "") or "")
-status_ua = _ua_status(status_raw)
-total = float(o.get("total", 0) or 0)
-username = o.get("user_full_name") or o.get("user_username") or "—"
+    header = (
+        f"📦 <b>Замовлення #{int(o.get('id', 0) or 0)}</b>\n"
+        f"🕒 {created}\n"
+        f"💳 Сума: <b>{total_txt} ₴</b>\n"
+        f"🔁 Статус: <b>{status_ua}</b>\n"
+        f"👤 Покупець: <b>{username}</b>\n\n"
+    )
 
-header = (
-    f"📦 <b>Замовлення #{int(o.get('id', 0) or 0)}</b>\n"
-    f"🕒 {created}\n"
-    f"💳 Сума: <b>{int(total) if float(total).is_integer() else f'{total:.2f}'} ₴</b>\n"
-    f"🔁 Статус: <b>{status_ua}</b>\n"
-    f"👤 Покупець: <b>{username}</b>\n\n"
-)
+    # ✅ важливо: тут прибираємо англійський технічний статус і дубль "Замовлення #..."
+    # тому НЕ додаємо format_order_text як є. Замінимо на “тіло” без шапки:
+    body = format_order_text(d, o)
 
-full_txt = header + format_order_text(d, o)
+    # якщо твій format_order_text дублює шапку — просто прибери перший блок до "🛍 Товари"
+    # (швидкий, безпечний спосіб — відрізати все до "🛍 Товари", якщо воно є)
+    marker = "🛍"
+    if marker in body:
+        body = body[body.index(marker):]
+
+    full_txt = header + body
 
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад в історію", callback_data=f"hist:page:{page}")
     kb.adjust(1)
 
-    # якщо це було фото-повідомлення — краще delete + send
-    if cb.message and cb.message.photo:
-        await _safe_delete(cb.message)
-        await cb.message.answer(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
-    else:
+    try:
+        await cb.message.edit_text(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
+    except Exception:
         try:
-            await cb.message.edit_text(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
-        except Exception:
             await _safe_delete(cb.message)
-            await cb.message.answer(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        except Exception:
+            pass
+        await cb.message.answer(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
 
     await cb.answer()
 
