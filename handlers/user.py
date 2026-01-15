@@ -19,7 +19,7 @@ from config import PREPAY_AMOUNT
 router = Router()
 
 NO_SUB = "_"
-CART_PER_PAGE = 2  # ✅ 2 товари на сторінку
+CART_PER_PAGE = 6  # ✅ 6 товари на сторінку
 
 
 # ===================== USERS (TRACK) =====================
@@ -763,15 +763,25 @@ def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
 
     kb.adjust(2)
 
-    # --- pager ---
-    prev_p = page - 1 if page > 0 else None
-    next_p = page + 1 if page < pages - 1 else None
+    # ✅ pager показуємо ТІЛЬКИ якщо сторінок більше 1
+    if pages > 1:
+        prev_p = page - 1 if page > 0 else None
+        next_p = page + 1 if page < pages - 1 else None
 
-    kb.row(
-        types.InlineKeyboardButton(text="⬅️", callback_data=f"cart:page:{prev_p}" if prev_p is not None else "noop"),
-        types.InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="noop"),
-        types.InlineKeyboardButton(text="➡️", callback_data=f"cart:page:{next_p}" if next_p is not None else "noop"),
-    )
+        kb.row(
+            types.InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"cart:page:{prev_p}" if prev_p is not None else "noop"
+            ),
+            types.InlineKeyboardButton(
+                text=f"{page+1}/{pages}",
+                callback_data="noop"
+            ),
+            types.InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"cart:page:{next_p}" if next_p is not None else "noop"
+            ),
+        )
 
     # --- actions ---
     kb.row(
@@ -801,7 +811,13 @@ def _render_cart_page(d: dict, uid: int, page: int) -> Tuple[str, float, List[di
 
     lines: List[str] = []
     lines.append("🧺 <b>Кошик</b>")
-    lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+
+    # ✅ показуємо "Сторінка: ..." тільки якщо сторінок більше 1
+    if pages > 1:
+        lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+    else:
+        lines.append(f"<i>Позиції: {len(all_items)}</i>")
+
     lines.append("")
 
     for p in page_items:
