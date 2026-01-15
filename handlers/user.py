@@ -507,21 +507,23 @@ async def favs_open(cb: types.CallbackQuery):
     if not p:
         return await cb.answer("Товар не знайдено", show_alert=True)
 
-    txt = product_card(p)
+    cart = _cart_dict(d, cb.from_user.id)
+    qty = int(cart.get(str(pid), 0) or 0)
+    txt = product_card(p) + f"\n\n🧺 <b>В кошику</b>: <b>{qty}</b> шт"
 
     # ✅ визначаємо чи вже в обраному
     fav_now = is_fav(d, cb.from_user.id, pid)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад в обране", callback_data=f"favs:page:{page}")
+    kb.button(text="🛒 В кошик", callback_data=f"favs:add:{pid}:{page}")
 
-    # ✅ ключ: page зберігаємо у callback
     if fav_now:
         kb.button(text="❌ З обраного", callback_data=f"favp:off:{pid}:{page}")
     else:
         kb.button(text="⭐ В обране", callback_data=f"favp:on:{pid}:{page}")
 
-    kb.adjust(1, 1)
+    kb.adjust(1, 1, 1)
 
     photos = p.get("photos", []) or []
     if photos:
@@ -547,11 +549,11 @@ async def favs_open(cb: types.CallbackQuery):
     await cb.answer()
 
 
-@router.callback_query(F.data.startswith("favp:"))
-async def fav_toggle_in_card(cb: types.CallbackQuery):
-    # favp:on:PID:PAGE  |  favp:off:PID:PAGE
+@router.callback_query(F.data.startswith("favs:add:"))
+async def favs_add_to_cart(cb: types.CallbackQuery):
+    # favs:add:PID:PAGE
     try:
-        _, mode, pid_str, page_str = cb.data.split(":")
+        _, _, pid_str, page_str = cb.data.split(":")
         pid = int(pid_str)
         page = int(page_str)
     except Exception:
@@ -560,35 +562,30 @@ async def fav_toggle_in_card(cb: types.CallbackQuery):
     d = await load_data()
     uid = cb.from_user.id
 
-    favs = user_favs(d, uid)
-    sset = set(int(x) for x in favs)
-
-    if mode == "on":
-        sset.add(pid)
-        await cb.answer("⭐ Додано в обране")
-    else:
-        sset.discard(pid)
-        await cb.answer("❌ Прибрано з обраного")
-
-    d["favorites"][str(uid)] = list(sset)
+    cart = _cart_dict(d, uid)
+    cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
     await save_data(d)
 
-    # ✅ просто перемальовуємо цю ж картку, не повертаємось в список
+    # перемальовуємо цю ж картку (оновиться qty)
     p = find_product(d, pid)
     if not p:
-        return
+        return await cb.answer("Товар не знайдено", show_alert=True)
 
-    txt = product_card(p)
+    qty = int(cart.get(str(pid), 0) or 0)
+    txt = product_card(p) + f"\n\n🧺 <b>В кошику</b>: <b>{qty}</b> шт"
 
     fav_now = is_fav(d, uid, pid)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Назад в обране", callback_data=f"favs:page:{page}")
+    kb.button(text="🛒 В кошик", callback_data=f"favs:add:{pid}:{page}")
+
     if fav_now:
         kb.button(text="❌ З обраного", callback_data=f"favp:off:{pid}:{page}")
     else:
         kb.button(text="⭐ В обране", callback_data=f"favp:on:{pid}:{page}")
-    kb.adjust(1, 1)
+
+    kb.adjust(1, 1, 1)
 
     photos = p.get("photos", []) or []
     if photos:
@@ -596,7 +593,6 @@ async def fav_toggle_in_card(cb: types.CallbackQuery):
         try:
             await cb.message.edit_media(media=media, reply_markup=kb.as_markup())
         except Exception:
-            # якщо edit_media не дав — просто міняємо клавіатуру, а текст хай лишається
             try:
                 await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
             except Exception:
@@ -609,6 +605,8 @@ async def fav_toggle_in_card(cb: types.CallbackQuery):
                 await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
             except Exception:
                 pass
+
+    await cb.answer("Додано 🛒")
 
 
 # ✅ апгрейд: якщо тиснуть "❌ З обраного" прямо в картці — одразу повертаємо в список "Обране"
