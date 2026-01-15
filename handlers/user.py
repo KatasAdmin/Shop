@@ -749,43 +749,21 @@ def _cart_pages_count(items_count: int) -> int:
 def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
     kb = InlineKeyboardBuilder()
 
-    # --- Row 1: names (2 columns) ---
-    if page_items:
-        row = []
-        for p in page_items:
-            pid = int(p["id"])
-            name = str(p.get("name", "Товар"))
-            if len(name) > 18:
-                name = name[:18] + "…"
-            row.append(types.InlineKeyboardButton(
-                text=f"🧾 {name}",
-                callback_data=f"cart:open:{pid}:{page}"
-            ))
-        kb.row(*row)
+    # ✅ Кнопки товарів (2 колонки, до CART_PER_PAGE штук)
+    for p in page_items:
+        pid = int(p["id"])
+        name = str(p.get("name", "Товар"))
+        if len(name) > 18:
+            name = name[:18] + "…"
 
-        # --- Row 2: controls ([- qty +] ×2) ---
-        row = []
-        for p in page_items:
-            pid = int(p["id"])
-            qty = int(cart.get(str(pid), 0) or 0)
-            row += [
-                types.InlineKeyboardButton(text="➖", callback_data=f"cart:dec:{pid}:{page}"),
-                types.InlineKeyboardButton(text=str(qty), callback_data="noop"),
-                types.InlineKeyboardButton(text="➕", callback_data=f"cart:inc:{pid}:{page}"),
-            ]
-        kb.row(*row)
+        kb.button(
+            text=f"🧾 {name}",
+            callback_data=f"cart:open:{pid}:{page}"
+        )
 
-        # --- Row 3: remove (🗑 ×2) ---
-        row = []
-        for p in page_items:
-            pid = int(p["id"])
-            row.append(types.InlineKeyboardButton(
-                text="🗑",
-                callback_data=f"cart:rm:{pid}:{page}"
-            ))
-        kb.row(*row)
+    kb.adjust(2)
 
-    # --- Row 4: pager ---
+    # --- pager ---
     prev_p = page - 1 if page > 0 else None
     next_p = page + 1 if page < pages - 1 else None
 
@@ -795,9 +773,11 @@ def cart_paged_kb(cart: dict, page_items: List[dict], page: int, pages: int):
         types.InlineKeyboardButton(text="➡️", callback_data=f"cart:page:{next_p}" if next_p is not None else "noop"),
     )
 
-    # --- Row 5/6: actions ---
-    kb.row(types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"))
-   
+    # --- actions ---
+    kb.row(
+        types.InlineKeyboardButton(text="🧾 Оформити замовлення", callback_data="checkout"),
+        types.InlineKeyboardButton(text="🗑 Очистити", callback_data="clear"),
+    )
 
     return kb.as_markup()
 
