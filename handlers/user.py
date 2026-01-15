@@ -1292,16 +1292,198 @@ async def pay_prepay(cb: types.CallbackQuery, bot: Bot):
 
 # ===================== HISTORY / SUPPORT =====================
 
+# ===================== HISTORY (PAGED, CLEAN) =====================
+
+HISTORY_PER_PAGE = 8  # ✅ 6-8 як ти хотів (можеш поставити 6 або 10)
+
+def _fmt_dt(ts: int) -> str:
+    try:
+        t = time.localtime(int(ts))
+        return time.strftime("%d.%m.%Y %H:%M", t)
+    except Exception:
+        return "-"
+
+def _status_emoji(s: str) -> str:
+    s = (s or "").lower()
+    if s in ("pending",):
+        return "🕓"
+    if s in ("paid", "prepay"):
+        return "💰"
+    if s in ("in_work",):
+        return "🧑‍💼"
+    if s in ("done",):
+        return "✅"
+    if s in ("canceled", "cancelled"):
+        return "❌"
+    return "📦"
+
+def _orders_all_for_user(d: dict, uid: int) -> List[dict]:
+    orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
+    # newest first
+    orders.sort(key=lambda x: int(x.get("created_ts", 0) or 0), reverse=True)
+    return orders
+
+def _orders_pages_count(n: int) -> int:
+    return max(1, int(math.ceil(n / HISTORY_PER_PAGE)))
+
+def history_kb(page_orders: List[dict], page: int, pages: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    # ✅ кнопки замовлень
+    for o in page_orders:
+        oid = int(o.get("id", 0) or 0)
+        ts = int(o.get("created_ts", 0) or 0)
+        st = str(o.get("status", "") or "")
+        total = float(o.get("total", 0) or 0)
+
+        # короткий текст на кнопці
+        # приклад: "✅ #12 · 1200 ₴ · 14.01"
+        date_short = _fmt_dt(ts)[:5]  # "dd.mm"
+        kb.button(
+            text=f"{_status_emoji(st)} #{oid} · {int(total) if float(total).is_integer() else f'{total:.0f}'} ₴ · {date_short}",
+            callback_data=f"hist:open:{oid}:{page}",
+        )
+
+    kb.adjust(1)  # 1 колонка, щоб читалось
+
+    # ✅ пейджер тільки якщо сторінок > 1
+    if pages > 1:
+        prev_p = page - 1 if page > 0 else None
+        next_p = page + 1 if page < pages - 1 else None
+
+        kb.row(
+            types.InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"hist:page:{prev_p}" if prev_p is not None else "noop"
+            ),
+            types.InlineKeyboardButton(
+                text=f"{page+1}/{pages}",
+                callback_data="noop"
+            ),
+            types.InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"hist:page:{next_p}" if next_p is not None else "noop"
+            ),
+        )
+
+    return kb.as_markup()
+
+def _render_history_page(d: dict, uid: int, page: int) -> Tuple[str, List[dict], int, int]:
+    orders = _orders_all_for_user(d, uid)
+    if not orders:
+        return "📦 <b>Історія замовлень</b>\n\nІсторія порожня.", [], 0, 1
+
+    pages = _orders_pages_count(len(orders))
+    page = max(0, min(page, pages - 1))
+
+    start = page * HISTORY_PER_PAGE
+    end = start + HISTORY_PER_PAGE
+    page_orders = orders[start:end]
+
+    lines = []
+    lines.append("📦 <b>Історія замовлень</b>")
+
+    # ✅ “сторінка” показуємо тільки якщо їх > 1
+    if pages > 1:
+        lines.append(f"<i>Замовлень: {len(orders)} · Сторінка: {page+1}/{pages}</i>")
+    else:
+        lines.append(f"<i>Замовлень: {len(orders)}</i>")
+
+    lines.append("")
+    lines.append("Натисніть на замовлення, щоб відкрити деталі 👇")
+
+    return "\n".join(lines), page_orders, page, pages
+
+async def _show_history_page_msg(msg: types.Message, page: int):
+    d = await load_data()
+    txt, page_orders, page, pages = _render_history_page(d, msg.from_user.id, page)
+
+    if not page_orders:
+        return await msg.answer(txt, parse_mode="HTML", reply_markup=main_menu())
+
+    await msg.answer(txt, parse_mode="HTML", reply_markup=history_kb(page_orders, page, pages))
+
+async def _edit_history(cb: types.CallbackQuery, page: int):
+    d = await load_data()
+    txt, page_orders, page, pages = _render_history_page(d, cb.from_user.id, page)
+
+    if not page_orders:
+        # якщо ми були на картці з фото — безпечно видалити
+        if cb.message and cb.message.photo:
+            await _safe_delete(cb.message)
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=main_menu())
+            return
+
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    # якщо ми на фото/картці — краще delete + send
+    if cb.message and cb.message.photo:
+        await _safe_delete(cb.message)
+        await cb.message.answer(txt, parse_mode="HTML", reply_markup=history_kb(page_orders, page, pages))
+        return
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=history_kb(page_orders, page, pages))
+
 @router.message(F.text == "📦 Історія замовлень")
 async def history(m: types.Message):
-    d = await load_data()
-    uid = m.from_user.id
-    orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
-    if not orders:
-        return await m.answer("Історія порожня.")
+    await _show_history_page_msg(m, 0)
 
-    for o in reversed(orders):
-        await m.answer(format_order_text(d, o), parse_mode="HTML")
+@router.callback_query(F.data.startswith("hist:page:"))
+async def hist_page(cb: types.CallbackQuery):
+    try:
+        page = int(cb.data.split(":")[2])
+    except Exception:
+        page = 0
+    await _edit_history(cb, page)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("hist:open:"))
+async def hist_open(cb: types.CallbackQuery):
+    # hist:open:OID:PAGE
+    try:
+        _, _, oid_str, page_str = cb.data.split(":")
+        oid = int(oid_str)
+        page = int(page_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
+    d = await load_data()
+    o = find_order(d, oid)
+    if not o or int(o.get("user_id", -1)) != int(cb.from_user.id):
+        return await cb.answer("Замовлення не знайдено", show_alert=True)
+
+    txt = format_order_text(d, o)
+    created = _fmt_dt(int(o.get("created_ts", 0) or 0))
+    status = str(o.get("status", "") or "")
+    total = float(o.get("total", 0) or 0)
+
+    # невеликий “шапка-бонус”
+    head = (
+        f"📦 <b>Замовлення #{int(o.get('id', 0) or 0)}</b>\n"
+        f"<i>{_status_emoji(status)} Статус: {status} · 🕒 {created} · 💳 {int(total) if float(total).is_integer() else f'{total:.2f}'} ₴</i>\n\n"
+    )
+    full_txt = head + txt
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад в історію", callback_data=f"hist:page:{page}")
+    kb.adjust(1)
+
+    # якщо це було фото-повідомлення — краще delete + send
+    if cb.message and cb.message.photo:
+        await _safe_delete(cb.message)
+        await cb.message.answer(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
+    else:
+        try:
+            await cb.message.edit_text(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        except Exception:
+            await _safe_delete(cb.message)
+            await cb.message.answer(full_txt, parse_mode="HTML", reply_markup=kb.as_markup())
+
+    await cb.answer()
 
 
 @router.message(F.text == "🆘 Підтримка")
