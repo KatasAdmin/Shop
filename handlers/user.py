@@ -1304,21 +1304,25 @@ def _fmt_dt(ts: int) -> str:
         return "-"
 
 def _status_emoji(s: str) -> str:
-    s = (s or "").lower()
-    if s in ("pending",):
+    s = (s or "").strip().lower()
+    if s in ("pending", "new"):
         return "🕓"
     if s in ("paid", "prepay"):
         return "💰"
-    if s in ("in_work",):
+    if s in ("in_work", "processing", "confirmed", "picked", "packing", "packed"):
         return "🧑‍💼"
-    if s in ("done",):
+    if s in ("shipped", "sent", "delivered"):
+        return "🚚"
+    if s in ("done", "completed"):
         return "✅"
+    if s in ("returned", "return"):
+        return "↩️"
     if s in ("canceled", "cancelled"):
         return "❌"
     return "📦"
 
 def _ua_status(s: str) -> str:
-    s = (s or "").lower()
+    s = (s or "").strip().lower()
     return {
         "pending": "Очікує",
         "paid": "Оплачено",
@@ -1326,9 +1330,23 @@ def _ua_status(s: str) -> str:
         "in_work": "В роботі",
         "done": "Виконано",
         "returned": "Повернуто",
+        "return": "Повернуто",
+
         "canceled": "Скасовано",
         "cancelled": "Скасовано",
-    }.get(s, s)
+
+        # ✅ найчастіші “англ” зі складських/адмінок:
+        "picked": "Зібрано",
+        "packing": "Пакування",
+        "packed": "Запаковано",
+        "shipped": "Відправлено",
+        "sent": "Відправлено",
+        "delivered": "Доставлено",
+        "completed": "Виконано",
+        "processing": "В обробці",
+        "confirmed": "Підтверджено",
+        "new": "Нове",
+    }.get(s, "В обробці")
 
 def _orders_all_for_user(d: dict, uid: int) -> List[dict]:
     orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
