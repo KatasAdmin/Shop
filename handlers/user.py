@@ -330,7 +330,7 @@ async def sub_back(cb: types.CallbackQuery):
 
 # ===================== HITS / FAVS =====================
 
-FAVS_PER_PAGE = 8  # ✅ 2 товари в ряд / на сторінку (як кошик)
+FAVS_PER_PAGE = 6  # ✅ 2 товари в ряд / на сторінку (як кошик)
 
 
 @router.message(F.text == "🔥 Хіти/Акції")
@@ -370,7 +370,7 @@ def _favs_pages_count(items_count: int) -> int:
 def favs_paged_kb(page_items: List[dict], page: int, pages: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
 
-    # ✅ кнопки товарів (2 колонки, до 8 штук)
+    # кнопки товарів
     for p in page_items:
         pid = int(p["id"])
         name = str(p.get("name", "Товар"))
@@ -382,18 +382,27 @@ def favs_paged_kb(page_items: List[dict], page: int, pages: int) -> types.Inline
             callback_data=f"favs:open:{pid}:{page}"
         )
 
-    # зробить 2 колонки для всіх кнопок вище
     kb.adjust(2)
 
-    # --- pager (окремим рядком) ---
-    prev_p = page - 1 if page > 0 else None
-    next_p = page + 1 if page < pages - 1 else None
+    # ✅ пейджер тільки якщо сторінок більше 1
+    if pages > 1:
+        prev_p = page - 1 if page > 0 else None
+        next_p = page + 1 if page < pages - 1 else None
 
-    kb.row(
-        types.InlineKeyboardButton(text="⬅️", callback_data=f"favs:page:{prev_p}" if prev_p is not None else "noop"),
-        types.InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="noop"),
-        types.InlineKeyboardButton(text="➡️", callback_data=f"favs:page:{next_p}" if next_p is not None else "noop"),
-    )
+        kb.row(
+            types.InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"favs:page:{prev_p}" if prev_p is not None else "noop"
+            ),
+            types.InlineKeyboardButton(
+                text=f"{page+1}/{pages}",
+                callback_data="noop"
+            ),
+            types.InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"favs:page:{next_p}" if next_p is not None else "noop"
+            ),
+        )
 
     return kb.as_markup()
 
@@ -413,7 +422,13 @@ def _render_favs_page(d: dict, uid: int, page: int) -> Tuple[str, List[dict], in
 
     lines: List[str] = []
     lines.append("⭐ <b>Обране</b>")
-    lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+
+    # ✅ показуємо сторінку тільки якщо їх більше однієї
+    if pages > 1:
+        lines.append(f"<i>Позиції: {len(all_items)} · Сторінка: {page+1}/{pages}</i>")
+    else:
+        lines.append(f"<i>Позиції: {len(all_items)}</i>")
+
     lines.append("")
     lines.append("Натисніть на товар, щоб відкрити картку 👇")
 
