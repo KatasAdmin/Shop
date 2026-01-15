@@ -463,6 +463,34 @@ async def cart_open_item(cb: types.CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("cart:page:"))
+async def cart_page(cb: types.CallbackQuery):
+    # формат: cart:page:PAGE
+    try:
+        page = int(cb.data.split(":")[2])
+    except Exception:
+        page = 0
+
+    d = await load_data()
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    # якщо у тебе є pager-клавіатура — тут підставиш її
+    # поки що лишаємо твою існуючу
+    await cb.message.edit_text(
+        txt,
+        parse_mode="HTML",
+        reply_markup=cart_controls_kb(cart, items, total)
+    )
+    await cb.answer()
+
+
 # ===================== CART (PAGED, 2 ITEMS) =====================
 
 def _money_uah(x) -> str:
@@ -737,14 +765,56 @@ async def cart_inc(cb: types.CallbackQuery):
     await cb.answer()
 
 
+def _parse_cart_cb_with_page(data: str):
+    """
+    Підтримка 2 форматів:
+    - cart:inc:PID
+    - cart:inc:PID:PAGE
+    """
+    parts = data.split(":")
+    if len(parts) < 3:
+        return None, None
+    pid = int(parts[2])
+    page = int(parts[3]) if len(parts) >= 4 else None
+    return pid, page
+
+
+@router.callback_query(F.data.startswith("cart:inc:"))
+async def cart_inc(cb: types.CallbackQuery):
+    d = await load_data()
+    pid, page = _parse_cart_cb_with_page(cb.data)
+    if pid is None:
+        return await cb.answer()
+
+    cart = _cart_dict(d, cb.from_user.id)
+    cart[str(pid)] = int(cart.get(str(pid), 0) or 0) + 1
+    await save_data(d)
+
+    # ✅ якщо ми в “картці товару” (є page) — оновлюємо саме її
+    if page is not None:
+        await _show_cart_item(cb, pid, page)
+        return await cb.answer()
+
+    # інакше — твій старий режим (кошик)
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("cart:dec:"))
 async def cart_dec(cb: types.CallbackQuery):
-    # cart:dec:{pid}:{page}
-    _, _, pid_str, page_str = cb.data.split(":", 3)
-    pid = int(pid_str)
-    page = int(page_str)
-
     d = await load_data()
+    pid, page = _parse_cart_cb_with_page(cb.data)
+    if pid is None:
+        return await cb.answer()
+
     cart = _cart_dict(d, cb.from_user.id)
     cur = int(cart.get(str(pid), 0) or 0)
     if cur <= 1:
@@ -753,32 +823,53 @@ async def cart_dec(cb: types.CallbackQuery):
         cart[str(pid)] = cur - 1
     await save_data(d)
 
-    # якщо сторінка стала порожня (видалили останній товар на останній сторінці) — відкотимо на попередню
-    txt, total, page_items, cart2, page2, pages2 = _render_cart_page(d, cb.from_user.id, page)
-    if not page_items and page > 0:
-        page -= 1
+    # ✅ якщо ми в “картці товару”
+    if page is not None:
+        # якщо видалили позицію — повертаємось у кошик
+        if int(_cart_dict(d, cb.from_user.id).get(str(pid), 0) or 0) <= 0:
+            cb.data = f"cart:page:{page}"
+            return await cart_page(cb)
+        await _show_cart_item(cb, pid, page)
+        return await cb.answer()
 
-    await _edit_cart(cb, page)
+    # режим кошика
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer()
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cart:rm:"))
 async def cart_rm(cb: types.CallbackQuery):
-    # cart:rm:{pid}:{page}
-    _, _, pid_str, page_str = cb.data.split(":", 3)
-    pid = int(pid_str)
-    page = int(page_str)
-
     d = await load_data()
+    pid, page = _parse_cart_cb_with_page(cb.data)
+    if pid is None:
+        return await cb.answer()
+
     cart = _cart_dict(d, cb.from_user.id)
     cart.pop(str(pid), None)
     await save_data(d)
 
-    txt, total, page_items, cart2, page2, pages2 = _render_cart_page(d, cb.from_user.id, page)
-    if not page_items and page > 0:
-        page -= 1
+    # ✅ якщо ми в “картці товару”
+    if page is not None:
+        cb.data = f"cart:page:{page}"
+        return await cart_page(cb)
 
-    await _edit_cart(cb, page)
+    txt, total, items, cart = await _render_cart_text(d, cb.from_user.id)
+    if not items:
+        try:
+            await cb.message.edit_text("Кошик порожній", reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer("Прибрано 🗑")
+
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=cart_controls_kb(cart, items, total))
     await cb.answer("Прибрано 🗑")
 
 
