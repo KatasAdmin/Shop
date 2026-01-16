@@ -1258,7 +1258,7 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
             f"BARCODE: <code>{barcode}</code>\n"
             f"Категорія: <b>{cat}</b> / <b>{sub_name}</b>\n",
             parse_mode="HTML",
-            reply_markup=panel_main_kb(m.from_user.id))
+            reply_markup=panel_main_kb(m.from_user.id)
         )
         # покажемо картку
         await m.answer(product_card(p), parse_mode="HTML", reply_markup=await product_actions_kb(pid))
