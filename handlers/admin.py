@@ -19,7 +19,7 @@ from text import order_premium_text, product_card
 router = Router()
 
 NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
-
+TRASH_CAT = "🧷 Утлет"  # системна категорія, куди переносимо товари при видаленні
 
 # =========================================================
 # NOTIFY BUYER
@@ -375,11 +375,16 @@ ROLE_PACKER = "packer"
 
 
 def _role_of(d: dict, uid: int) -> str:
-    if is_admin(uid):
-        return ROLE_ADMIN
     roles = d.get("roles", {}) or {}
     r = (roles.get(str(uid)) or "").strip().lower()
-    return r or ROLE_MANAGER
+
+    if r in (ROLE_ADMIN, ROLE_MANAGER, ROLE_PACKER):
+        return r
+
+    if is_admin(uid):
+        return ROLE_ADMIN
+
+    return ROLE_MANAGER
 
 
 def can_manage_orders(d: dict, uid: int) -> bool:
@@ -1613,6 +1618,7 @@ async def add_manager(m: types.Message, state: FSMContext):
 
     # питаємо роль через кнопки
     kb = InlineKeyboardBuilder()
+    kb.button(text="👑 Адмін", callback_data=f"adm:role:set:{uid}:admin")
     kb.button(text="👨‍💼 Менеджер", callback_data=f"adm:role:set:{uid}:manager")
     kb.button(text="📦 Пакувальник", callback_data=f"adm:role:set:{uid}:packer")
     kb.button(text="⬅️ Скасувати", callback_data="adm:cancel")
@@ -1637,7 +1643,7 @@ async def set_role(cb: types.CallbackQuery):
     parts = cb.data.split(":")
     uid = int(parts[3])
     role = (parts[4] or "").strip().lower()
-    if role not in ("manager", "packer"):
+    if role not in ("admin", "manager", "packer"):
         role = "manager"
 
     d.setdefault("roles", {})
@@ -2175,3 +2181,57 @@ async def sub_delete_do(cb: types.CallbackQuery):
 
     await cb.message.answer(f"✅ Підкатегорію <b>{sub}</b> видалено.", parse_mode="HTML")
     await cb.answer()
+
+
+@router.callback_query(F.data == "adm:roles:list")
+async def roles_list(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_manage_staff(d, cb.from_user.id):
+        return await cb.answer("⛔️ Тільки адмін", show_alert=True)
+
+    roles = d.get("roles", {}) or {}
+    managers = set(int(x) for x in (d.get("managers", []) or []))
+
+    lines = ["👥 <b>Ролі персоналу</b>\n"]
+
+    if not roles and not managers:
+        lines.append("— персонал ще не доданий —")
+    else:
+        used = set()
+        for uid_str, role in roles.items():
+            try:
+                uid = int(uid_str)
+            except Exception:
+                continue
+            used.add(uid)
+            lines.append(f"• <code>{uid}</code> — <b>{role}</b>")
+
+        # ті, хто є менеджерами, але без ролі
+        for uid in managers:
+            if uid not in used:
+                lines.append(f"• <code>{uid}</code> — <b>manager</b>")
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➖ Зняти роль", callback_data="adm:roles:remove")
+    kb.button(text="⬅️ Назад", callback_data="adm:panel:settings")
+    kb.adjust(1)
+
+    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "adm:roles:remove")
+async def role_remove_start(cb: types.CallbackQuery, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_manage_staff(d, cb.from_user.id):
+        return await cb.answer("⛔️ Тільки адмін", show_alert=True)
+
+    await state.set_state(AdminFSM.add_manager)
+    await cb.message.answer(
+        "Введіть <b>ID користувача</b>, у якого треба зняти роль / доступ:",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+#========================================Кінець===================
