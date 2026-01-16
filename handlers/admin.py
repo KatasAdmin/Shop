@@ -542,18 +542,17 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
         )
         return await cb.answer()
 
-    # ---- ЗАБРАВ ----
-    if action == "picked":
+    # ---- ЗАБРАВ (КЛІЄНТ ОТРИМАВ) ----
+    if action == "picked":  # callback залишаємо як є, щоб не ламати кнопку
         if order.get("status") != "shipped":
             return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
 
-        order["status"] = "picked"
+        order["status"] = "received"   # ✅ новий статус
         await save_data(d)
 
         await _reply_updated(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
         await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid}: забрано. Дякуємо! 🙌")
         return await cb.answer()
-
     # ---- НЕ ЗАБРАВ ----
     if action == "not_picked":
         if order.get("status") != "shipped":
