@@ -1,7 +1,16 @@
+# handlers/admin.py
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
+from typing import Dict, Any, List
 
+from orders_timeline import (
+    _evt,
+    order_set_status,
+    order_set_ttn,
+    render_timeline_text,
+)
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -17,7 +26,101 @@ router = Router()
 NO_SUB = "_"  # системна підкатегорія (в UI показуємо як "🧷 Утлет")
 
 
-# -------------------- SMALL HELPERS --------------------
+# =========================================================
+# EVENTS / TIMELINE (як у user.py, але локально, без циклів)
+# =========================================================
+
+def _evt(order: dict, code: str, title: str, details: str = "") -> None:
+    """
+    Події замовлення:
+    order["events"] = [{ts, code, title, details}]
+    """
+    order.setdefault("events", [])
+    order["events"].append({
+        "ts": int(time.time()),
+        "code": str(code),
+        "title": str(title),
+        "details": str(details or ""),
+    })
+
+
+def _ensure_events(order: dict) -> None:
+    """
+    Для старих замовлень без events — створимо базову подію “створено”.
+    """
+    order.setdefault("events", [])
+    if order["events"]:
+        return
+    created_ts = int(order.get("created_ts", 0) or 0)
+    if created_ts:
+        _evt(order, "created", "Замовлення створено", "")
+
+
+def order_set_status(order: dict, new_status: str, who: str = "", details: str = "") -> None:
+    """
+    ЄДИНИЙ правильний спосіб міняти статус в адмінці:
+    - виставляє order["status"]
+    - пише подію в events
+    """
+    old = (order.get("status") or "").strip().lower()
+    ns = (new_status or "").strip().lower()
+    if not ns or old == ns:
+        return
+
+    order["status"] = ns
+    _ensure_events(order)
+
+    who_line = f"Хто: {who}\n" if who else ""
+    body = f"{old or '—'} → {ns}"
+    if details:
+        body = body + "\n" + details.strip()
+
+    _evt(order, "status", "Статус змінено", (who_line + body).strip())
+
+
+def order_set_ttn(order: dict, ttn: str, who: str = "", details: str = "") -> None:
+    """
+    Фіксуємо ТТН:
+    - пишемо в order["ttn"] і order["np_ttn"] (сумісність)
+    - пишемо подію в events
+    """
+    ttn = (ttn or "").strip()
+
+    prev = (order.get("np_ttn") or order.get("ttn") or "").strip()
+    order["ttn"] = ttn
+    order["np_ttn"] = ttn  # ✅ важливо для правила “Відправлено тільки якщо є ТТН”
+
+    _ensure_events(order)
+
+    who_line = f"Хто: {who}\n" if who else ""
+    if not ttn and prev:
+        _evt(order, "ttn", "ТТН очищено", (who_line + prev).strip())
+        return
+
+    if ttn and prev and prev != ttn:
+        extra = (details or "").strip()
+        msg = f"{prev} → {ttn}" + (f"\n{extra}" if extra else "")
+        _evt(order, "ttn", "ТТН змінено", (who_line + msg).strip())
+        return
+
+    if ttn and not prev:
+        extra = (details or "").strip()
+        msg = f"{ttn}" + (f"\n{extra}" if extra else "")
+        _evt(order, "ttn", "ТТН додано", (who_line + msg).strip())
+        return
+
+
+async def _notify_buyer(bot: Bot, d: dict, order: dict, title: str):
+    uid = int(order.get("user_id", 0) or 0)
+    if not uid:
+        return
+    txt = title + "\n\n" + format_order_text(d, order)
+    await notify_user(bot, uid, txt, parse_mode="HTML")
+
+
+# =========================================================
+# SMALL HELPERS
+# =========================================================
 
 def _hits_set(d: dict) -> set[int]:
     """Нормалізує hits до set[int], навіть якщо в JSON збереглись рядки."""
@@ -32,9 +135,7 @@ def _hits_set(d: dict) -> set[int]:
 
 
 def _ensure_product_schema(p: dict) -> None:
-    """
-    Захист від старих товарів без полів base_price/promo_*.
-    """
+    """Захист від старих товарів без полів base_price/promo_* та sku/barcode."""
     if "base_price" not in p:
         p["base_price"] = p.get("price", 0) or 0
     if "price" not in p:
@@ -43,8 +144,6 @@ def _ensure_product_schema(p: dict) -> None:
         p["promo_price"] = 0
     if "promo_until_ts" not in p:
         p["promo_until_ts"] = None
-
-    # ✅ NEW
     if "sku" not in p:
         p["sku"] = ""
     if "barcode" not in p:
@@ -82,19 +181,8 @@ def _order_products(d: dict, o: dict) -> list[dict]:
             pp = dict(p)
             pp["_qty"] = max(1, qty)
             products.append(pp)
-
     return products
-    
 
-async def _notify_buyer(bot: Bot, d: dict, order: dict, title: str):
-    uid = int(order.get("user_id", 0) or 0)
-    if not uid:
-        return
-    txt = title + "\n\n" + format_order_text(d, order)
-    await notify_user(bot, uid, txt, parse_mode="HTML")
-
-
-# ✅ ДОДАЙ ОЦЕ ТУТ (перед MENUS)
 
 async def _cat_by_index(cat_i: int) -> str | None:
     d = await load_data()
@@ -124,9 +212,12 @@ async def _sub_by_index(cat_i: int, sub_i: str) -> str | None:
     if 0 <= j < len(subs_list):
         return subs_list[j]
     return None
+# handlers/admin.py  (PART 2/8)
+# ПРОДОВЖЕННЯ ФАЙЛУ — встав після Part 1
 
-
-# -------------------- MENUS --------------------
+# =========================================================
+# MENUS / INLINE KB
+# =========================================================
 
 def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
     rows = [
@@ -201,9 +292,14 @@ def edit_menu_kb(pid: int) -> types.InlineKeyboardMarkup:
     kb.button(text="🏷 Акційна ціна", callback_data=f"adm:edit:promo:{pid}")
     kb.button(text="🧹 Прибрати акцію", callback_data=f"adm:edit:promo_clear:{pid}")
 
+    # ✅ SKU / BARCODE (на майбутнє інтеграції)
+    kb.button(text="🏷 SKU (артикул)", callback_data=f"adm:edit:sku:{pid}")
+    kb.button(text="🏁 Штрихкод", callback_data=f"adm:edit:barcode:{pid}")
+
     kb.button(text="⬅️ Назад", callback_data="adm:cancel")
     kb.adjust(1)
     return kb.as_markup()
+
 
 async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
     d = await load_data()
@@ -221,33 +317,60 @@ async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
+
 def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup:
+    """
+    Статуси (технічні):
+    pending / paid / prepay / in_work / packed / shipped / arrived / received / not_picked / returned / done / canceled
+    """
+    s = (status or "").strip().lower()
     kb = InlineKeyboardBuilder()
 
-    # взяти в роботу
-    if status in ("paid", "prepay"):
+    # 1) Взяти в роботу
+    if s in ("paid", "prepay"):
         kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
 
-    # завершити (як “закрито”)
-    if status in ("paid", "prepay", "in_work", "shipped"):
-        kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
+    # 2) Пакування (для пакувальника теж буде)
+    if s in ("in_work", "paid", "prepay"):
+        kb.button(text="📦 Запаковано", callback_data=f"adm:order:packed:{oid}")
 
-    # логістика
-    if status in ("paid", "prepay", "in_work", "shipped"):
+    # 3) Відправлено (просимо ТТН)
+    if s in ("paid", "prepay", "in_work", "packed", "shipped"):
         kb.button(text="🚚 Відправлено", callback_data=f"adm:order:shipped:{oid}")
 
-    if status == "shipped":
-        kb.button(text="✅ Забрав (продано)", callback_data=f"adm:order:picked:{oid}")
+    # 4) Логістика / фінал
+    if s == "shipped":
+        kb.button(text="📍 Прибуло у відділення", callback_data=f"adm:order:arrived:{oid}")
+        kb.button(text="✅ Отримано (забрав)", callback_data=f"adm:order:received:{oid}")
         kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
         kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
 
-    # історія покупця
-    kb.button(text="📜 Історія покупця", callback_data=f"adm:order:history:{oid}")
+    if s in ("arrived",):
+        kb.button(text="✅ Отримано (забрав)", callback_data=f"adm:order:received:{oid}")
+        kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
+        kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
+
+    if s in ("not_picked",):
+        kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
+
+    # 5) Завершити (закрити)
+    if s in ("received", "returned", "not_picked"):
+        kb.button(text="✅ Закрити (done)", callback_data=f"adm:order:done:{oid}")
+
+    # 6) ТТН окремо (якщо треба змінити/додати)
+    kb.button(text="🧾 Встановити ТТН", callback_data=f"adm:order:set_ttn:{oid}")
+
+    # 7) Історія покупця + хронологія
+    kb.button(text="👤 Історія покупця", callback_data=f"adm:order:history:{oid}")
+    kb.button(text="📜 Хронологія", callback_data=f"adm:order:timeline:{oid}")
 
     kb.adjust(1)
     return kb.as_markup()
 
-# -------------------- PANEL (ONE MESSAGE) --------------------
+
+# =========================================================
+# PANEL (ONE MESSAGE)
+# =========================================================
 
 def panel_main_kb(uid: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
@@ -274,10 +397,7 @@ def panel_orders_kb() -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📋 Нові (оплачені)", callback_data="adm:panel:orders_paid")
     kb.button(text="📦 Усі замовлення", callback_data="adm:panel:orders_all")
-
-    # ✅ додали пошук покупця в панель
     kb.button(text="🔎 Пошук покупця", callback_data="adm:panel:buyer_search")
-
     kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
     kb.adjust(1)
     return kb.as_markup()
@@ -290,7 +410,11 @@ def panel_settings_kb(uid: int) -> types.InlineKeyboardMarkup:
     kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
     kb.adjust(1)
     return kb.as_markup()
-# -------------------- COMMON --------------------
+
+
+# =========================================================
+# COMMON ENTRY / CANCEL
+# =========================================================
 
 @router.message(Command("admin"))
 async def admin_cmd(m: types.Message, state: FSMContext):
@@ -299,10 +423,10 @@ async def admin_cmd(m: types.Message, state: FSMContext):
         return await m.answer("⛔️ Немає доступу")
     await state.clear()
     await m.answer(
-    "🔧 <b>Панель</b>\nОберіть розділ:",
-    parse_mode="HTML",
-    reply_markup=panel_main_kb(m.from_user.id)
-)
+        "🔧 <b>Панель</b>\nОберіть розділ:",
+        parse_mode="HTML",
+        reply_markup=panel_main_kb(m.from_user.id)
+    )
 
 
 @router.message(F.text == "❌ Відміна")
@@ -321,16 +445,16 @@ async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer("Немає доступу", show_alert=True)
 
     await state.clear()
-
-    # ✅ Повертаємося в компактну панель одним повідомленням
     await cb.message.answer(
-        "🔧 Панель (Адмін/Менеджер)",
+        "🔧 Панель (Адмін/Персонал)",
         reply_markup=panel_main_kb(cb.from_user.id)
     )
     await cb.answer()
 
 
-# -------------------- PANEL NAV --------------------
+# =========================================================
+# PANEL NAV
+# =========================================================
 
 @router.callback_query(F.data.startswith("adm:panel:"))
 async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
@@ -339,12 +463,11 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer("Немає доступу", show_alert=True)
 
     await state.clear()
-
     action = cb.data.split(":")[2]
 
     # головна
     if action in ("back", "main"):
-        await cb.message.answer("🔧 Панель (Адмін/Менеджер)", reply_markup=panel_main_kb(cb.from_user.id))
+        await cb.message.answer("🔧 Панель (Адмін/Персонал)", reply_markup=panel_main_kb(cb.from_user.id))
         return await cb.answer()
 
     # розділи
@@ -370,7 +493,7 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
         await state.set_state(AdminFSM.add_sub_cat)
         await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("sub_add"))
         return await cb.answer()
-    
+
     if action == "cats":
         await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("catmgmt"))
         return await cb.answer()
@@ -385,7 +508,7 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer()
 
     if action == "orders_paid":
-        paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
+        paid = [o for o in (d.get("orders", []) or []) if (o.get("status") or "") in ("paid", "prepay")]
         if not paid:
             await cb.message.answer("Немає нових оплачених/передплачених замовлень.")
             return await cb.answer()
@@ -414,7 +537,6 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
             )
         return await cb.answer()
 
-    # ✅ ОЦЕ — правильне місце для buyer_search (не всередині orders_all)
     if action == "buyer_search":
         await state.set_state(AdminFSM.search_buyer)
         await cb.message.answer(
@@ -436,9 +558,385 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer()
 
     return await cb.answer("Невідома дія", show_alert=True)
+# handlers/admin.py  (PART 3/8)
+# ПРОДОВЖЕННЯ ФАЙЛУ — встав після Part 2/8
+
+# =========================================================
+# ORDERS: CHANGE STATUS + TIMELINE + TTN
+# =========================================================
+
+def _fmt_dt(ts: int) -> str:
+    try:
+        dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone()
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return "-"
 
 
-# -------------------- ORDERS --------------------
+def _evt(order: dict, code: str, title: str, details: str = "") -> None:
+    order.setdefault("events", [])
+    order["events"].append({
+        "ts": int(datetime.now(tz=timezone.utc).timestamp()),
+        "code": str(code),
+        "title": str(title),
+        "details": str(details or ""),
+    })
+
+
+def _ensure_events(order: dict) -> None:
+    order.setdefault("events", [])
+    if order["events"]:
+        return
+    created_ts = int(order.get("created_ts", 0) or 0)
+    if created_ts:
+        order["events"].append({
+            "ts": created_ts,
+            "code": "created",
+            "title": "Замовлення створено",
+            "details": "",
+        })
+
+
+def order_set_status(order: dict, new_status: str, details: str = "") -> None:
+    """
+    ЄДИНИЙ правильний спосіб міняти статус в адмінці.
+    - міняє order["status"]
+    - пише подію в order["events"]
+    """
+    old = (order.get("status") or "").strip().lower()
+    ns = (new_status or "").strip().lower()
+    if not ns or ns == old:
+        return
+
+    order["status"] = ns
+    _ensure_events(order)
+    _evt(order, "status", "Статус змінено", f"{old or '—'} → {ns}\n{details}".strip())
+
+
+def order_set_ttn(order: dict, ttn: str, details: str = "") -> None:
+    """
+    ЄДИНИЙ правильний спосіб ставити/міняти ТТН.
+    Тримаємо і np_ttn і ttn (сумісність).
+    """
+    ttn = (ttn or "").strip()
+    prev = (order.get("np_ttn") or order.get("ttn") or "").strip()
+
+    order["np_ttn"] = ttn
+    order["ttn"] = ttn
+
+    _ensure_events(order)
+    if prev and prev != ttn:
+        _evt(order, "ttn", "ТТН змінено", f"{prev} → {ttn}\n{details}".strip())
+    elif (not prev) and ttn:
+        _evt(order, "ttn", "ТТН додано", ttn)
+    elif prev and not ttn:
+        _evt(order, "ttn", "ТТН очищено", prev)
+
+
+def _render_timeline_admin(order: dict) -> str:
+    _ensure_events(order)
+    evs = order.get("events", []) or []
+    if not evs:
+        return "📜 <b>Хронологія</b>\n\nПодій поки немає."
+
+    evs_sorted = sorted(evs, key=lambda x: int(x.get("ts", 0) or 0))
+    lines = ["📜 <b>Хронологія</b>", ""]
+    for e in evs_sorted:
+        ts = _fmt_dt(int(e.get("ts", 0) or 0))
+        title = str(e.get("title", "") or "")
+        details = str(e.get("details", "") or "")
+        if details:
+            lines.append(f"• <b>{title}</b> — <i>{ts}</i>\n  {details}")
+        else:
+            lines.append(f"• <b>{title}</b> — <i>{ts}</i>")
+
+    ttn = (order.get("np_ttn") or order.get("ttn") or "").strip()
+    if ttn:
+        lines.append("")
+        lines.append(f"📦 ТТН: <code>{ttn}</code>")
+
+    return "\n".join(lines)
+
+
+def _find_order(d: dict, oid: int) -> dict | None:
+    for o in (d.get("orders", []) or []):
+        try:
+            if int(o.get("id", -1)) == int(oid):
+                return o
+        except Exception:
+            continue
+    return None
+
+
+@router.callback_query(F.data.startswith("adm:order:"))
+async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    _, _, action, oid_str = cb.data.split(":")
+    oid = int(oid_str)
+
+    order = _find_order(d, oid)
+    if not order:
+        await cb.message.answer("❌ Замовлення не знайдено.")
+        return await cb.answer()
+
+    async def _reply_updated(prefix_text: str):
+        products = _order_products(d, order)
+        await cb.message.answer(
+            prefix_text + "\n\n" + order_premium_text(d, order, products),
+            parse_mode="HTML",
+            reply_markup=order_actions_kb(oid, str(order.get("status", "")))
+        )
+
+    # ---- В РОБОТУ ----
+    if action == "in_work":
+        if (order.get("status") or "") not in ("paid", "prepay"):
+            return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
+
+        order_set_status(order, "in_work")
+        _evt(order, "in_work", "Прийнято в роботу", f"Менеджер: {cb.from_user.id}")
+        await save_data(d)
+
+        await _reply_updated(f"🟡 Замовлення #{oid} взято в роботу.")
+        await _notify_buyer(bot, d, order, f"🟡 Ваше замовлення #{oid} взято в роботу ✅")
+        return await cb.answer()
+
+    # ---- ЗАПАКОВАНО ----
+    if action == "packed":
+        if (order.get("status") or "") not in ("paid", "prepay", "in_work"):
+            return await cb.answer("Запакувати можна після paid/prepay/in_work", show_alert=True)
+
+        order_set_status(order, "packed")
+        _evt(order, "packed", "Запаковано", f"Пакувальник: {cb.from_user.id}")
+        await save_data(d)
+
+        await _reply_updated(f"📦 Замовлення #{oid} запаковано.")
+        await _notify_buyer(bot, d, order, f"📦 Ваше замовлення #{oid} запаковано ✅")
+        return await cb.answer()
+
+    # ---- ВІДПРАВЛЕНО (потім просимо ТТН) ----
+    if action == "shipped":
+        if (order.get("status") or "") not in ("paid", "prepay", "in_work", "packed", "shipped"):
+            return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
+
+        # ставимо статус shipped, але для клієнта він стане “Відправлено” ТІЛЬКИ якщо є ТТН (це правило у user.py)
+        order_set_status(order, "shipped")
+        _evt(order, "shipped", "Відправлено", f"Менеджер: {cb.from_user.id}")
+        await save_data(d)
+
+        await _reply_updated(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
+        await state.clear()
+        await state.set_state(AdminFSM.order_ttn)
+        await state.update_data(oid=oid)
+
+        await cb.message.answer("📮 Введіть ТТН для цього замовлення (або '-' щоб без ТТН):")
+        return await cb.answer()
+
+    # ---- ПРИБУЛО ----
+    if action == "arrived":
+        if (order.get("status") or "") not in ("shipped", "arrived"):
+            return await cb.answer("Прибуло доречно тільки після 'Відправлено'", show_alert=True)
+
+        order_set_status(order, "arrived")
+        _evt(order, "arrived", "Прибуло у відділення", "")
+        await save_data(d)
+
+        await _reply_updated(f"📍 Замовлення #{oid}: прибуло у відділення.")
+        await _notify_buyer(bot, d, order, f"📍 Замовлення #{oid}: прибуло у відділення ✅")
+        return await cb.answer()
+
+    # ---- ОТРИМАНО ----
+    if action == "received":
+        if (order.get("status") or "") not in ("shipped", "arrived", "received"):
+            return await cb.answer("Отримано доречно після shipped/arrived", show_alert=True)
+
+        order_set_status(order, "received")
+        _evt(order, "received", "Отримано (забрав)", "")
+        await save_data(d)
+
+        await _reply_updated(f"✅ Замовлення #{oid}: клієнт ОТРИМАВ (забрав).")
+        await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid}: отримано. Дякуємо! 🙌")
+        return await cb.answer()
+
+    # ---- НЕ ЗАБРАВ ----
+    if action == "not_picked":
+        if (order.get("status") or "") not in ("shipped", "arrived", "not_picked"):
+            return await cb.answer("Не забрав доречно після shipped/arrived", show_alert=True)
+
+        order_set_status(order, "not_picked")
+        _evt(order, "not_picked", "Не забрав", "")
+        await save_data(d)
+
+        await _reply_updated(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
+        await _notify_buyer(bot, d, order, f"❌ Замовлення #{oid}: не забрано. Напишіть нам — допоможемо 🤝")
+        return await cb.answer()
+
+    # ---- ПОВЕРНУТО ----
+    if action == "returned":
+        if (order.get("status") or "") not in ("shipped", "arrived", "not_picked", "returned"):
+            return await cb.answer("Повернення ставимо після логістики", show_alert=True)
+
+        order_set_status(order, "returned")
+        _evt(order, "returned", "Повернуто", "")
+        await save_data(d)
+
+        await _reply_updated(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
+        await _notify_buyer(bot, d, order, f"🔁 Замовлення #{oid}: повернено. Якщо є питання — пишіть 🙏")
+        return await cb.answer()
+
+    # ---- DONE (закрити) ----
+    if action == "done":
+        if (order.get("status") or "") in ("done", "canceled"):
+            return await cb.answer("Вже закрито", show_alert=True)
+
+        order_set_status(order, "done")
+        _evt(order, "done", "Закрито (done)", "")
+        await save_data(d)
+
+        await _reply_updated(f"✅ Замовлення #{oid} закрито.")
+        await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid} завершено 🎉")
+        return await cb.answer()
+
+    # ---- SET TTN (ручна) ----
+    if action == "set_ttn":
+        await state.clear()
+        await state.set_state(AdminFSM.order_ttn)
+        await state.update_data(oid=oid)
+        await cb.message.answer("📮 Введіть ТТН (або '-' щоб очистити):")
+        return await cb.answer()
+
+    # ---- TIMELINE (адмін) ----
+    if action == "timeline":
+        txt = _render_timeline_admin(order)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data="adm:cancel")
+        kb.adjust(1)
+        await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        return await cb.answer()
+
+    # ---- історія покупця ----
+    if action == "history":
+        uid = int(order.get("user_id", 0) or 0)
+        if not uid:
+            await cb.message.answer("❌ У замовлення немає user_id.")
+            return await cb.answer()
+
+        user_orders = [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == uid]
+        if not user_orders:
+            await cb.message.answer("Історія порожня.")
+            return await cb.answer()
+
+        user_link = f'<a href="tg://user?id={uid}">👤 Покупець</a>'
+        await cb.message.answer(user_link + "\n<b>📜 Історія замовлень покупця:</b>", parse_mode="HTML")
+
+        for o in reversed(user_orders):
+            products = _order_products(d, o)
+            await cb.message.answer(
+                order_premium_text(d, o, products),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+            )
+        return await cb.answer()
+
+    return await cb.answer("Невідома дія", show_alert=True)
+
+
+@router.message(AdminFSM.order_ttn)
+async def admin_set_ttn(m: types.Message, state: FSMContext, bot: Bot):
+    st = await state.get_data()
+    oid = int(st.get("oid", 0) or 0)
+    txt = (m.text or "").strip()
+
+    d = await load_data()
+    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
+    if not order:
+        await state.clear()
+        return await m.answer("❌ Замовлення не знайдено.")
+
+    if txt == "-":
+        # очищення ТТН
+        order_set_ttn(order, "", details=f"Ким: {m.from_user.id}")
+        await save_data(d)
+        await state.clear()
+        return await m.answer("✅ ТТН очищено.")
+
+    # зберігаємо ТТН правильно (np_ttn + event)
+    order_set_ttn(order, txt, details=f"Ким: {m.from_user.id}")
+
+    # ✅ ВАЖЛИВО: якщо статус уже shipped — ок, якщо ні — не чіпаємо
+    # але можемо додати подію, що "ТТН додано"
+    await save_data(d)
+    await state.clear()
+
+    await m.answer("✅ ТТН збережено.")
+
+    # клієнту — якщо замовлення відправлено (або ти хочеш завжди — можеш прибрати if)
+    if (order.get("status") or "").strip().lower() in ("shipped", "sent"):
+        await _notify_buyer(bot, d, order, f"🚚 Ваше замовлення #{oid} відправлено ✅")
+# handlers/admin.py  (PART 4/8)
+# ВСТАВ ПІСЛЯ Part 3/8
+
+# =========================================================
+# ORDER ACTIONS KB (оновлюємо кнопки під нові статуси)
+# =========================================================
+
+def order_actions_kb(oid: int, status: str) -> types.InlineKeyboardMarkup:
+    """
+    Кнопки під реальні робочі стани.
+    Принцип:
+    - paid/prepay -> in_work -> (опц.) packed -> shipped(+ТТН) -> arrived -> received
+    - якщо не забрав -> not_picked -> returned
+    - done закриває замовлення
+    """
+    st = (status or "").strip().lower()
+    kb = InlineKeyboardBuilder()
+
+    # 1) В роботу
+    if st in ("paid", "prepay"):
+        kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
+
+    # 2) Запаковано (для пакувальника / складу)
+    if st in ("paid", "prepay", "in_work"):
+        kb.button(text="📦 Запаковано", callback_data=f"adm:order:packed:{oid}")
+
+    # 3) Відправлено (після packed або in_work) + ввід ТТН
+    if st in ("paid", "prepay", "in_work", "packed"):
+        kb.button(text="🚚 Відправлено + ТТН", callback_data=f"adm:order:shipped:{oid}")
+
+    # 4) Прибуло / Отримано / Не забрав
+    if st in ("shipped", "arrived"):
+        kb.button(text="📍 Прибуло у відділення", callback_data=f"adm:order:arrived:{oid}")
+        kb.button(text="✅ Отримано (забрав)", callback_data=f"adm:order:received:{oid}")
+        kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
+
+    # 5) Повернення (після не забрав, інколи й після shipped)
+    if st in ("not_picked", "shipped"):
+        kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
+
+    # 6) Завершити (закрити) — дозволено майже на всіх робочих етапах
+    if st in ("paid", "prepay", "in_work", "packed", "shipped", "arrived", "received", "not_picked", "returned"):
+        kb.button(text="✅ Завершити", callback_data=f"adm:order:done:{oid}")
+
+    # 7) Інфо (завжди)
+    kb.button(text="📜 Хронологія", callback_data=f"adm:order:timeline:{oid}")
+    kb.button(text="📜 Історія покупця", callback_data=f"adm:order:history:{oid}")
+
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================
+# ВАЖЛИВО: якщо у тебе вище в файлі вже є order_actions_kb —
+# заміни її повністю на цю версію (щоб не було "picked"/"зібрано").
+# =========================================================
+
+
+# =========================================================
+# ADMIN: "ORDERS PAID" / "ORDERS ALL" — підтягуємо правильні кнопки
+# (якщо у тебе ці блоки вже є — можна не чіпати, але тут версія з норм статусом)
+# =========================================================
 
 @router.message(F.text == "📋 Нові (оплачені)")
 async def orders_paid(m: types.Message):
@@ -446,7 +944,7 @@ async def orders_paid(m: types.Message):
     if not is_staff(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
 
-    paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
+    paid = [o for o in (d.get("orders", []) or []) if (o.get("status") in ("paid", "prepay"))]
     if not paid:
         return await m.answer("Немає нових оплачених/передплачених замовлень.")
 
@@ -478,12 +976,345 @@ async def orders_all(m: types.Message):
         )
 
 
+# =========================================================
+# NOTE по твоїй проблемі "в історії юзера зібрано"
+# ---------------------------------------------------------
+# Це стається, коли в order["status"] лежить "picked" або "packing"/"packed"
+# і мапінг у user.py показує "Зібрано"/"Пакування".
+#
+# Ми тепер робимо:
+# - "received" -> "Отримано"
+# - "packed" -> "Запаковано" (це ОК)
+# - shipped/sent -> "Відправлено" тільки якщо є ТТН (ваше правило)
+# =========================================================
+# handlers/admin.py  (PART 5/8)
+# ВСТАВ ПІСЛЯ Part 4/8
+
+# =========================================================
+# TIMELINE / EVENTS для замовлень (як у user.py)
+# щоб: адмін міняє статус -> пишеться хронологія
+# і можна показати хронологію в адмінці кнопкою
+# =========================================================
+
+import time
+import re
+
+def _evt(order: dict, code: str, title: str, details: str = "") -> None:
+    order.setdefault("events", [])
+    order["events"].append({
+        "ts": int(time.time()),
+        "code": str(code),
+        "title": str(title),
+        "details": str(details or ""),
+    })
+
+
+def _fmt_dt(ts: int) -> str:
+    try:
+        t = time.localtime(int(ts))
+        return time.strftime("%d.%m.%Y %H:%M", t)
+    except Exception:
+        return "-"
+
+
+def _ensure_events(o: dict) -> None:
+    o.setdefault("events", [])
+    if o["events"]:
+        return
+    created_ts = int(o.get("created_ts", 0) or 0)
+    if created_ts:
+        o["events"].append({
+            "ts": created_ts,
+            "code": "created",
+            "title": "Замовлення створено",
+            "details": "",
+        })
+
+
+def order_set_status(o: dict, new_status: str, title: str = "", details: str = "") -> None:
+    """
+    ЄДИНИЙ правильний спосіб міняти статус в адмінці/інтеграції.
+    """
+    old = (o.get("status") or "").strip().lower()
+    ns = (new_status or "").strip().lower()
+    if not ns or old == ns:
+        return
+
+    o["status"] = ns
+    _ensure_events(o)
+
+    if not title:
+        title = "Статус змінено"
+
+    # дружній details + технічний перехід
+    det = f"{old or '—'} → {ns}"
+    if details:
+        det = det + "\n" + details
+
+    _evt(o, "status", title, det)
+
+
+def order_set_ttn(o: dict, ttn: str, details: str = "") -> None:
+    """
+    Зберігаємо ТТН у np_ttn і ttn (сумісність),
+    і додаємо подію.
+    """
+    ttn = (ttn or "").strip()
+    if ttn == "-":
+        ttn = ""
+
+    prev = (o.get("np_ttn") or o.get("ttn") or "").strip()
+
+    o["np_ttn"] = ttn
+    o["ttn"] = ttn
+
+    _ensure_events(o)
+
+    if not prev and ttn:
+        _evt(o, "ttn", "ТТН додано", ttn)
+    elif prev and not ttn:
+        _evt(o, "ttn", "ТТН видалено", prev)
+    elif prev != ttn:
+        _evt(o, "ttn", "ТТН змінено", f"{prev} → {ttn}\n{details}".strip())
+
+
+def _render_timeline_admin(o: dict) -> str:
+    _ensure_events(o)
+    evs = o.get("events", []) or []
+    if not evs:
+        return "📜 <b>Хронологія</b>\n\nПодій ще немає."
+
+    lines = ["📜 <b>Хронологія</b>", ""]
+    evs_sorted = sorted(evs, key=lambda x: int(x.get("ts", 0) or 0))
+    for e in evs_sorted:
+        dt = _fmt_dt(int(e.get("ts", 0) or 0))
+        title = str(e.get("title", "") or "")
+        details = str(e.get("details", "") or "")
+        if details:
+            lines.append(f"• <b>{title}</b> — <i>{dt}</i>")
+            lines.append(f"  {details}")
+        else:
+            lines.append(f"• <b>{title}</b> — <i>{dt}</i>")
+        lines.append("")
+
+    ttn = (o.get("np_ttn") or o.get("ttn") or "").strip()
+    if ttn:
+        lines.append(f"📦 ТТН: <code>{ttn}</code>")
+
+    return "\n".join(lines).strip()
+
+
+# =========================================================
+# ADMIN FSM: окремий режим "ввести ТТН" (ми вже маємо AdminFSM.order_ttn)
+# але тепер використовуємо його і для shipped, і для ручного set_ttn
+# =========================================================
+
+def _ttn_digits_only(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "").strip())
+
+
+# =========================================================
+# КНОПКА: 📜 Хронологія / 📮 Встановити ТТН
+# =========================================================
+
+@router.callback_query(F.data.startswith("adm:order:timeline:"))
+async def adm_order_timeline(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    oid = int(cb.data.split(":")[3])
+    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
+    if not order:
+        return await cb.answer("Замовлення не знайдено", show_alert=True)
+
+    txt = _render_timeline_admin(order)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="adm:cancel")
+    kb.adjust(1)
+
+    await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:order:set_ttn:"))
+async def adm_order_set_ttn(cb: types.CallbackQuery, state: FSMContext):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    oid = int(cb.data.split(":")[3])
+    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
+    if not order:
+        return await cb.answer("Замовлення не знайдено", show_alert=True)
+
+    await state.clear()
+    await state.set_state(AdminFSM.order_ttn)
+    await state.update_data(oid=oid)
+
+    cur = (order.get("np_ttn") or order.get("ttn") or "").strip() or "—"
+    await cb.message.answer(
+        f"📮 Поточний ТТН: <code>{cur}</code>\n\n"
+        "Введіть новий ТТН або <code>-</code> щоб видалити:",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# =========================================================
+# ОБРОБНИК ВВОДУ ТТН (переписуємо твій, щоб:
+# - записував np_ttn і подію
+# - якщо статус shipped і ттн є -> юзеру в історії буде "Відправлено"
+# =========================================================
+
+@router.message(AdminFSM.order_ttn)
+async def admin_set_ttn(m: types.Message, state: FSMContext, bot: Bot):
+    st = await state.get_data()
+    oid = int(st.get("oid", 0) or 0)
+
+    raw = (m.text or "").strip()
+    ttn = "" if raw == "-" else _ttn_digits_only(raw)
+
+    d = await load_data()
+    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
+    if not order:
+        await state.clear()
+        return await m.answer("❌ Замовлення не знайдено.")
+
+    # зберегти ттн + подія
+    order_set_ttn(order, ttn)
+
+    await save_data(d)
+    await state.clear()
+
+    await m.answer("✅ ТТН збережено.")
+
+    # якщо замовлення вже shipped — повідомимо покупця (опціонально, але круто)
+    if (order.get("status") or "").strip().lower() in ("shipped", "sent"):
+        await _notify_buyer(bot, d, order, f"🚚 Ваше замовлення #{oid} відправлено ✅")
+
+
+# =========================================================
+# ВАЖЛИВО:
+# Якщо в тебе вище вже є @router.message(AdminFSM.order_ttn) — ЗАМІНИ на цей.
+# =========================================================
+# ===================== PART 6/8 (REPEAT) =====================
+# РОЛІ + ПРАВА + ВИПРАВЛЕННЯ СТАТУСІВ (picked != received)
+
+from typing import Optional
+
+ROLE_ADMIN = "admin"
+ROLE_MANAGER = "manager"
+ROLE_PACKER = "packer"
+
+def _role_of(d: dict, uid: int) -> str:
+    # адмін завжди адмін
+    if is_admin(uid):
+        return ROLE_ADMIN
+    roles = d.get("roles", {}) or {}
+    r = (roles.get(str(uid)) or "").strip().lower()
+    # якщо ролі нема — вважаємо "manager"
+    return r or ROLE_MANAGER
+
+
+def can_manage_orders(d: dict, uid: int) -> bool:
+    return _role_of(d, uid) in (ROLE_ADMIN, ROLE_MANAGER, ROLE_PACKER)
+
+
+def can_edit_catalog(d: dict, uid: int) -> bool:
+    return _role_of(d, uid) in (ROLE_ADMIN, ROLE_MANAGER)
+
+
+def can_manage_staff(d: dict, uid: int) -> bool:
+    return _role_of(d, uid) == ROLE_ADMIN
+
+
+def can_set_ttn(d: dict, uid: int) -> bool:
+    # ТТН ставить менеджер/адмін
+    return _role_of(d, uid) in (ROLE_ADMIN, ROLE_MANAGER)
+
+
+def can_mark_packing(d: dict, uid: int) -> bool:
+    # пакувальник має право "зібрано/запаковано"
+    return _role_of(d, uid) in (ROLE_ADMIN, ROLE_MANAGER, ROLE_PACKER)
+
+
+def can_mark_logistics(d: dict, uid: int) -> bool:
+    # відправка/отримано/повернення — тільки менеджер/адмін
+    return _role_of(d, uid) in (ROLE_ADMIN, ROLE_MANAGER)
+
+
+# -------------------------------------------------------------
+# ✅ НОВИЙ order_actions_kb (з ролями + правильні кнопки)
+# -------------------------------------------------------------
+def order_actions_kb(
+    oid: int,
+    status: str,
+    *,
+    d: Optional[dict] = None,
+    uid: Optional[int] = None,
+) -> types.InlineKeyboardMarkup:
+    """
+    Якщо передати d та uid — увімкнемо рольові обмеження.
+    Якщо не передати — буде як раніше (всі кнопки доступні).
+    """
+    kb = InlineKeyboardBuilder()
+    st = (status or "").strip().lower()
+
+    allow_any = (d is None or uid is None)
+
+    def _allow(fn):
+        return True if allow_any else fn(d, uid)
+
+    # 1) В роботу
+    if st in ("paid", "prepay") and _allow(can_manage_orders):
+        kb.button(text="🟡 В роботу", callback_data=f"adm:order:in_work:{oid}")
+
+    # 2) Склад/пакування
+    # picked = "зібрано" (комплектація)
+    # packed = "запаковано"
+    if st in ("paid", "prepay", "in_work", "picked") and _allow(can_mark_packing):
+        kb.button(text="📦 Зібрано", callback_data=f"adm:order:picked:{oid}")
+    if st in ("paid", "prepay", "in_work", "picked", "packed") and _allow(can_mark_packing):
+        kb.button(text="🎁 Запаковано", callback_data=f"adm:order:packed:{oid}")
+
+    # 3) Відправлено
+    if st in ("paid", "prepay", "in_work", "picked", "packed", "shipped") and _allow(can_mark_logistics):
+        kb.button(text="🚚 Відправлено", callback_data=f"adm:order:shipped:{oid}")
+
+    # 4) Після відправки
+    if st == "shipped" and _allow(can_mark_logistics):
+        kb.button(text="✅ Отримано (клієнт)", callback_data=f"adm:order:received:{oid}")
+        kb.button(text="❌ Не забрав", callback_data=f"adm:order:not_picked:{oid}")
+        kb.button(text="🔁 Повернуто", callback_data=f"adm:order:returned:{oid}")
+
+    # 5) Закрити (done)
+    if st in ("paid", "prepay", "in_work", "picked", "packed", "shipped", "received", "returned", "not_picked") and _allow(can_mark_logistics):
+        kb.button(text="✅ Закрити (done)", callback_data=f"adm:order:done:{oid}")
+
+    # 6) Додатково
+    kb.button(text="📜 Хронологія", callback_data=f"adm:order:timeline:{oid}")
+
+    if _allow(can_set_ttn):
+        kb.button(text="📮 Встановити ТТН", callback_data=f"adm:order:set_ttn:{oid}")
+
+    kb.button(text="👤 Історія покупця", callback_data=f"adm:order:history:{oid}")
+
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# -------------------------------------------------------------
+# ✅ НОВИЙ order_change_status
+# -------------------------------------------------------------
 @router.callback_query(F.data.startswith("adm:order:"))
 async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMContext):
     d = await load_data()
     if not is_staff(d, cb.from_user.id):
         return await cb.answer("Немає доступу", show_alert=True)
 
+    # adm:order:<action>:<oid>
     _, _, action, oid_str = cb.data.split(":")
     oid = int(oid_str)
 
@@ -492,73 +1323,94 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
         await cb.message.answer("❌ Замовлення не знайдено.")
         return await cb.answer()
 
+    # -------- рольові обмеження --------
+    if action in ("picked", "packed") and not can_mark_packing(d, cb.from_user.id):
+        return await cb.answer("⛔️ Недостатньо прав", show_alert=True)
+
+    if action in ("in_work", "shipped", "received", "not_picked", "returned", "done", "set_ttn") and not can_mark_logistics(d, cb.from_user.id):
+        return await cb.answer("⛔️ Недостатньо прав", show_alert=True)
+
     async def _reply_updated(prefix_text: str):
         products = _order_products(d, order)
+        kb = order_actions_kb(oid, str(order.get("status", "")), d=d, uid=cb.from_user.id)
         await cb.message.answer(
             prefix_text + "\n\n" + order_premium_text(d, order, products),
             parse_mode="HTML",
-            reply_markup=order_actions_kb(oid, str(order.get("status", "")))
+            reply_markup=kb
         )
+
+    st = (order.get("status") or "").strip().lower()
 
     # ---- В РОБОТУ ----
     if action == "in_work":
-        if order.get("status") not in ("paid", "prepay"):
+        if st not in ("paid", "prepay"):
             return await cb.answer("Тільки paid/prepay можна взяти в роботу", show_alert=True)
 
-        order["status"] = "in_work"
+        # ✅ ВАЖЛИВО: статус міняємо ТІЛЬКИ через order_set_status
+        order_set_status(order, "in_work", details=f"Ким: {cb.from_user.id}")
         await save_data(d)
 
         await _reply_updated(f"🟡 Замовлення #{oid} взято в роботу.")
         await _notify_buyer(bot, d, order, f"🟡 Ваше замовлення #{oid} взято в роботу ✅")
         return await cb.answer()
 
-    # ---- ЗАВЕРШЕНО ----
-    if action == "done":
-        if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
-            return await cb.answer("Неможливо завершити", show_alert=True)
+    # ---- ЗІБРАНО (picked = склад/комплектація, НЕ клієнт) ----
+    if action == "picked":
+        if st not in ("paid", "prepay", "in_work", "picked"):
+            return await cb.answer("Збирати можна після оплати/в роботі", show_alert=True)
 
-        order["status"] = "done"
+        order_set_status(order, "picked", details=f"Зібрано (склад). Ким: {cb.from_user.id}")
         await save_data(d)
 
-        await _reply_updated(f"✅ Замовлення #{oid} завершено.")
-        await _notify_buyer(bot, d, order, f"✅ Ваше замовлення #{oid} завершено 🎉")
+        await _reply_updated(f"📦 Замовлення #{oid}: ЗІБРАНО (склад).")
         return await cb.answer()
 
-    # ---- ВІДПРАВЛЕНО (ТТН просимо після кліку) ----
+    # ---- ЗАПАКОВАНО ----
+    if action == "packed":
+        if st not in ("paid", "prepay", "in_work", "picked", "packed"):
+            return await cb.answer("Пакувати можна після 'в роботі/зібрано'", show_alert=True)
+
+        order_set_status(order, "packed", details=f"Запаковано. Ким: {cb.from_user.id}")
+        await save_data(d)
+
+        await _reply_updated(f"🎁 Замовлення #{oid}: ЗАПАКОВАНО.")
+        return await cb.answer()
+
+    # ---- ВІДПРАВЛЕНО ----
     if action == "shipped":
-        if order.get("status") not in ("paid", "prepay", "in_work", "shipped"):
+        if st not in ("paid", "prepay", "in_work", "picked", "packed", "shipped"):
             return await cb.answer("Неможливо позначити як відправлено", show_alert=True)
 
-        order["status"] = "shipped"
+        order_set_status(order, "shipped", details=f"Відправлено. Ким: {cb.from_user.id}")
         await save_data(d)
 
         await _reply_updated(f"🚚 Замовлення #{oid} позначено як ВІДПРАВЛЕНО.")
+
+        # ✅ після shipped просимо ТТН через FSM (як і в тебе)
         await state.clear()
         await state.set_state(AdminFSM.order_ttn)
         await state.update_data(oid=oid)
-
-        await cb.message.answer(
-            "📮 Введіть ТТН для цього замовлення (або '-' якщо без ТТН):"
-        )
+        await cb.message.answer("📮 Введіть ТТН для цього замовлення (або '-' якщо без ТТН):")
         return await cb.answer()
 
-    # ---- ЗАБРАВ (КЛІЄНТ ОТРИМАВ) ----
-    if action == "picked":  # callback залишаємо як є, щоб не ламати кнопку
-        if order.get("status") != "shipped":
+    # ---- ОТРИМАНО (received = клієнт забрав/отримав) ----
+    if action == "received":
+        if st != "shipped":
             return await cb.answer("Спочатку треба 'Відправлено'", show_alert=True)
 
-        order["status"] = "received"   # ✅ новий статус
+        order_set_status(order, "received", details=f"Клієнт отримав. Ким: {cb.from_user.id}")
         await save_data(d)
 
-        await _reply_updated(f"✅ Замовлення #{oid}: клієнт ЗАБРАВ (продано).")
-        await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid}: забрано. Дякуємо! 🙌")
+        await _reply_updated(f"✅ Замовлення #{oid}: КЛІЄНТ ОТРИМАВ.")
+        await _notify_buyer(bot, d, order, f"✅ Замовлення #{oid}: отримано. Дякуємо! 🙌")
         return await cb.answer()
+
     # ---- НЕ ЗАБРАВ ----
     if action == "not_picked":
-        if order.get("status") != "shipped":
+        if st != "shipped":
             return await cb.answer("Це доречно тільки після 'Відправлено'", show_alert=True)
 
-        order["status"] = "not_picked"
+        order_set_status(order, "not_picked", details=f"Не забрав. Ким: {cb.from_user.id}")
         await save_data(d)
 
         await _reply_updated(f"❌ Замовлення #{oid}: НЕ ЗАБРАВ.")
@@ -567,17 +1419,28 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
 
     # ---- ПОВЕРНУТО ----
     if action == "returned":
-        if order.get("status") not in ("shipped", "not_picked", "picked"):
+        if st not in ("shipped", "not_picked", "received"):
             return await cb.answer("Повернення ставимо після логістики", show_alert=True)
 
-        order["status"] = "returned"
+        order_set_status(order, "returned", details=f"Повернуто. Ким: {cb.from_user.id}")
         await save_data(d)
 
         await _reply_updated(f"🔁 Замовлення #{oid}: ПОВЕРНУТО.")
         await _notify_buyer(bot, d, order, f"🔁 Замовлення #{oid}: повернено. Якщо є питання — пишіть 🙏")
         return await cb.answer()
 
-    # ---- історія покупця ----
+    # ---- DONE ----
+    if action == "done":
+        if st not in ("paid", "prepay", "in_work", "picked", "packed", "shipped", "received", "returned", "not_picked"):
+            return await cb.answer("Неможливо завершити", show_alert=True)
+
+        order_set_status(order, "done", details=f"Закрито (done). Ким: {cb.from_user.id}")
+        await save_data(d)
+
+        await _reply_updated(f"✅ Замовлення #{oid} закрито (done).")
+        return await cb.answer()
+
+    # ---- історія покупця (як було, але kb тепер рольовий) ----
     if action == "history":
         uid = int(order.get("user_id", 0) or 0)
         if not uid:
@@ -594,1064 +1457,14 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
 
         for o in reversed(user_orders):
             products = _order_products(d, o)
+            kb = order_actions_kb(int(o["id"]), str(o.get("status", "")), d=d, uid=cb.from_user.id)
             await cb.message.answer(
                 order_premium_text(d, o, products),
                 parse_mode="HTML",
-                reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
+                reply_markup=kb
             )
         return await cb.answer()
 
-    return await cb.answer("Невідома дія", show_alert=True)
-
-# -------------------- BUYER SEARCH --------------------
-
-def _norm(s: str) -> str:
-    return (s or "").strip().lower()
-
-
-def _match_user_record(u: dict, q: str) -> bool:
-    q = _norm(q)
-    if not q:
-        return False
-
-    uid = str(u.get("id", "") or "")
-    username = _norm(u.get("username", "") or "")
-    full_name = _norm(u.get("full_name", "") or "")
-
-    # якщо ввели цифри — шукаємо по id (частковий матч дозволяє "123" знайти "123456")
-    if q.isdigit():
-        return q in uid
-
-    # якщо ввели @username або просто username
-    q2 = q[1:] if q.startswith("@") else q
-    return (q2 and q2 in username) or (q in full_name)
-
-
-def _user_brief(u: dict) -> str:
-    uid = int(u.get("id", 0) or 0)
-    username = (u.get("username") or "").strip()
-    full_name = (u.get("full_name") or "").strip()
-
-    user_link = f'<a href="tg://user?id={uid}">👤 Покупець</a>'
-    uname_show = f"@{username}" if username else "—"
-
-    return (
-        f"{user_link}\n"
-        f"<b>{full_name or '—'}</b>\n"
-        f"ID: <code>{uid}</code>\n"
-        f"Username: {uname_show}"
-    )
-
-
-def _orders_of_user(d: dict, uid: int) -> list[dict]:
-    return [o for o in (d.get("orders", []) or []) if int(o.get("user_id", -1)) == int(uid)]
-
-
-def _virtual_users_from_orders(d: dict, q: str) -> list[dict]:
-    """
-    Якщо users порожні або не знайшли — шукаємо по orders і робимо "віртуальні" user records.
-    """
-    qn = _norm(q)
-    if not qn:
-        return []
-
-    qn2 = qn[1:] if qn.startswith("@") else qn
-
-    cand_uids: set[int] = set()
-    for o in (d.get("orders", []) or []):
-        ouid = int(o.get("user_id", 0) or 0)
-        ouname = _norm(o.get("user_username", "") or "")
-        ofull = _norm(o.get("user_full_name", "") or "")
-
-        if qn.isdigit() and qn in str(ouid):
-            cand_uids.add(ouid)
-        elif qn.startswith("@") and qn2 and ouname == qn2:
-            cand_uids.add(ouid)
-        else:
-            if qn and (qn in ofull or qn in ouname):
-                cand_uids.add(ouid)
-
-    out: list[dict] = []
-    for uid in cand_uids:
-        last = None
-        for o in reversed(d.get("orders", []) or []):
-            if int(o.get("user_id", 0) or 0) == uid:
-                last = o
-                break
-        out.append({
-            "id": uid,
-            "username": (last.get("user_username") if last else "") or "",
-            "full_name": (last.get("user_full_name") if last else "") or "",
-        })
-
-    return out
-
-
-@router.message(F.text == "🔎 Пошук покупця")
-async def buyer_search_btn(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    await state.clear()
-    await state.set_state(AdminFSM.search_buyer)
-
-    await m.answer(
-        "🔎 <b>Пошук покупця</b>\n\n"
-        "Введіть одне з:\n"
-        "• ID (число)\n"
-        "• @username\n"
-        "• частину імені\n\n"
-        "Приклад: <code>123456789</code> або <code>@katas</code> або <code>Віктор</code>",
-        parse_mode="HTML",
-        reply_markup=staff_menu(m.from_user.id)
-    )
-
-
-@router.message(AdminFSM.search_buyer)
-async def buyer_search_run(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    q = (m.text or "").strip()
-    if not q:
-        return await m.answer("Введіть ID / @username / ім’я.")
-
-    users = list((d.get("users", {}) or {}).values())
-    found_users = [u for u in users if _match_user_record(u, q)]
-
-    # fallback на orders
-    if not found_users:
-        found_users = _virtual_users_from_orders(d, q)
-
-    if not found_users:
-        await state.clear()
-        return await m.answer("❌ Нічого не знайдено.", reply_markup=staff_menu(m.from_user.id))
-
-    found_users = found_users[:10]
-    await m.answer(f"✅ Знайдено: <b>{len(found_users)}</b>", parse_mode="HTML")
-
-    # якщо ввели точний ID — покажемо історію одразу після картки
-    q_is_uid = q.isdigit()
-    q_uid = int(q) if q_is_uid else None
-
-    for u in found_users:
-        uid = int(u.get("id", 0) or 0)
-        u_orders = _orders_of_user(d, uid)
-
-        tag = ((d.get("user_tags", {}) or {}).get(str(uid), "") or "").strip()
-        tag_line = f"\n🏷 <b>Характер</b>: {tag}" if tag else "\n🏷 <b>Характер</b>: —"
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🏷 Характер", callback_data=f"adm:usertag:{uid}")
-        kb.adjust(1)
-
-        await m.answer(
-            _user_brief(u)
-            + tag_line
-            + f"\nЗамовлень: <b>{len(u_orders)}</b>\n\n"
-              "Щоб подивитись деталі — введіть ID ще раз (я покажу всі його замовлення нижче).",
-            parse_mode="HTML",
-            reply_markup=kb.as_markup()
-        )
-
-        if q_is_uid and q_uid == uid:
-            if not u_orders:
-                await m.answer("📭 У цього покупця ще немає замовлень.")
-            else:
-                await m.answer("📜 <b>Історія замовлень:</b>", parse_mode="HTML")
-                for o in reversed(u_orders):
-                    products = _order_products(d, o)
-                    await m.answer(
-                        order_premium_text(d, o, products),
-                        parse_mode="HTML",
-                        reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")))
-                    )
-
-    await state.set_state(AdminFSM.search_buyer)
-    await m.answer("Готово ✅ (можна вводити наступний запит)", reply_markup=staff_menu(m.from_user.id))
-
-
-@router.callback_query(F.data.startswith("adm:usertag:"))
-async def set_user_tag_ask(cb: types.CallbackQuery, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    uid = int(cb.data.split(":")[2])
-
-    await state.clear()
-    await state.set_state(AdminFSM.user_tag)
-    await state.update_data(uid=uid)
-
-    await cb.message.answer(
-        f"🏷 Введіть 'характер' для користувача ID <code>{uid}</code>\n"
-        "Або <b>-</b> щоб очистити.",
-        parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@router.message(AdminFSM.user_tag)
-async def set_user_tag_save(m: types.Message, state: FSMContext):
-    st = await state.get_data()
-    uid = int(st.get("uid", 0) or 0)
-
-    txt = (m.text or "").strip()
-    if txt == "-":
-        txt = ""
-
-    d = await load_data()
-    d.setdefault("user_tags", {})
-    d["user_tags"][str(uid)] = txt
-    await save_data(d)
-
-    await state.clear()
-    await m.answer("✅ Характер збережено.")
-    
-# -------------------- MANAGERS (ADMIN ONLY) --------------------
-
-@router.message(F.text == "👤 Додати менеджера")
-async def add_manager_btn(m: types.Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
-        return await m.answer("⛔️ Тільки адмін")
-    await state.clear()
-    await state.set_state(AdminFSM.add_manager)
-    await m.answer("Введіть ID менеджера (число):")
-
-
-@router.message(AdminFSM.add_manager)
-async def add_manager_save(m: types.Message, state: FSMContext):
-    if not is_admin(m.from_user.id):
-        return await m.answer("⛔️ Тільки адмін")
-
-    try:
-        uid = int((m.text or "").strip())
-    except Exception:
-        return await m.answer("Введіть число (ID користувача).")
-
-    d = await load_data()
-    d.setdefault("managers", [])
-    if uid not in d["managers"]:
-        d["managers"].append(uid)
-        await save_data(d)
-
-    await state.clear()
-    await m.answer(f"✅ Менеджера додано: {uid}", reply_markup=staff_menu(m.from_user.id))
-
-
-
-# -------------------- ADD CATEGORY --------------------
-
-@router.message(F.text == "➕ Додати категорію")
-async def add_cat_btn(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-    await state.clear()
-    await state.set_state(AdminFSM.add_cat)
-    await m.answer("Введіть назву категорії:")
-
-
-@router.message(AdminFSM.add_cat)
-async def add_cat_name(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    name = (m.text or "").strip()
-    if not name:
-        return await m.answer("Введіть назву текстом.")
-
-    d.setdefault("categories", {})
-    d["categories"].setdefault(name, {})
-    await save_data(d)
-
-    await state.clear()
-    await m.answer(f"✅ Категорію «{name}» додано.", reply_markup=staff_menu(m.from_user.id))
-
-
-# -------------------- ADD SUBCATEGORY --------------------
-
-@router.message(F.text == "➕ Додати підкатегорію")
-async def add_sub_btn(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    if not d.get("categories"):
-        return await m.answer("Спочатку додайте категорію.")
-
-    await state.clear()
-    await state.set_state(AdminFSM.add_sub_cat)
-    await m.answer("Оберіть категорію:", reply_markup=await cats_inline("sub_add"))
-
-
-@router.callback_query(F.data.startswith("adm:sub_add:cat_i:"))
-async def pick_cat_for_sub(cb: types.CallbackQuery, state: FSMContext):
-    cat_i = int(cb.data.split(":")[3])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    await state.update_data(cat=cat, cat_i=cat_i)
-    await state.set_state(AdminFSM.add_sub_name)
-    await cb.message.answer(f"Введіть назву підкатегорії для «{cat}»:")
-    await cb.answer()
-
-
-@router.message(AdminFSM.add_sub_name)
-async def add_sub_name(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    sub = (m.text or "").strip()
-    if not sub:
-        return await m.answer("Введіть назву текстом.")
-    if sub == NO_SUB:
-        return await m.answer("Ця назва зарезервована. Оберіть іншу.")
-
-    st = await state.get_data()
-    cat = st.get("cat")
-    if not cat:
-        await state.clear()
-        return await m.answer("❌ Помилка. Спробуйте ще раз.")
-
-    d.setdefault("categories", {})
-    d["categories"].setdefault(cat, {})
-    d["categories"][cat].setdefault(sub, [])
-    await save_data(d)
-
-    await state.clear()
-    await m.answer(f"✅ Підкатегорію «{sub}» додано в «{cat}».", reply_markup=staff_menu(m.from_user.id))
-
-
-# -------------------- CATEGORY / SUBCATEGORY MGMT (DELETE) --------------------
-
-@router.message(F.text == "🗂 Категорії/Підкатегорії")
-async def cat_mgmt(m: types.Message):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    if not d.get("categories"):
-        return await m.answer("Категорій ще немає.")
-
-    await m.answer("Оберіть категорію:", reply_markup=await cats_inline("catmgmt"))
-
-
-@router.callback_query(F.data.startswith("adm:catmgmt:cat_i:"))
-async def catmgmt_pick(cb: types.CallbackQuery):
-    cat_i = int(cb.data.split(":")[3])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 Видалити категорію", callback_data=f"adm:catdelask_i:{cat_i}")
-    kb.button(text="🗑 Видалити підкатегорію", callback_data=f"adm:subdelpick_i:{cat_i}")
-    kb.adjust(1)
-
-    await cb.message.answer(
-        f"Категорія: <b>{cat}</b>\nОберіть дію:",
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:catdelask_i:"))
-async def cat_del_ask(cb: types.CallbackQuery):
-    cat_i = int(cb.data.split(":")[2])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    await cb.message.answer(
-        f"⚠️ Видалити категорію «{cat}» разом з підкатегоріями і товарами?",
-        reply_markup=confirm_kb(f"adm:catdel_i:{cat_i}")
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:catdel_i:"))
-async def cat_del(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[2])
-    cat = await _cat_by_index(cat_i)
-    if not cat or cat not in (d.get("categories", {}) or {}):
-        await cb.message.answer("❌ Категорію не знайдено.")
-        return await cb.answer()
-
-    hits = _hits_set(d)
-    for _, items in (d["categories"].get(cat, {}) or {}).items():
-        for p in items:
-            hits.discard(int(p.get("id", -1)))
-    d["hits"] = list(hits)
-
-    del d["categories"][cat]
-    await save_data(d)
-    await cb.message.answer(f"✅ Категорію «{cat}» видалено.")
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:subdelpick_i:"))
-async def sub_del_pick(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[2])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    subs = (d.get("categories", {}) or {}).get(cat, {}) or {}
-    real = [s for s in subs.keys() if s != NO_SUB]
-    if not real:
-        await cb.message.answer("У цій категорії немає підкатегорій.")
-        return await cb.answer()
-
-    await cb.message.answer(
-        "Оберіть підкатегорію:",
-        reply_markup=await subs_inline(cat_i, "subdelask", include_no_sub=False)
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:subdelask:sub_i:"))
-async def sub_del_ask(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    _, _, _, cat_i_str, sub_i = cb.data.split(":")
-    cat_i = int(cat_i_str)
-    cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i)
-    if not cat or sub is None:
-        return await cb.answer("Некоректний вибір", show_alert=True)
-
-    await cb.message.answer(
-        f"⚠️ Видалити підкатегорію «{sub}» у «{cat}» разом з товарами?",
-        reply_markup=confirm_kb(f"adm:subdel_i:{cat_i}:{sub_i}")
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:subdel_i:"))
-async def sub_del(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    _, _, cat_i_str, sub_i = cb.data.split(":")
-    cat_i = int(cat_i_str)
-    cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i)
-    if not cat or sub is None:
-        return await cb.answer("Некоректний вибір", show_alert=True)
-
-    if cat in (d.get("categories", {}) or {}) and sub in (d["categories"].get(cat, {}) or {}):
-        hits = _hits_set(d)
-        for p in d["categories"][cat][sub]:
-            hits.discard(int(p.get("id", -1)))
-        d["hits"] = list(hits)
-
-        del d["categories"][cat][sub]
-        await save_data(d)
-        await cb.message.answer(f"✅ Підкатегорію «{sub}» видалено.")
-    else:
-        await cb.message.answer("❌ Підкатегорію не знайдено.")
-    await cb.answer()
-
-
-# -------------------- ADD PRODUCT (NO SUB OK) --------------------
-
-@router.message(F.text == "➕ Додати товар")
-async def add_product_btn(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    if not d.get("categories"):
-        return await m.answer("Спочатку додайте категорію.")
-
-    await state.clear()
-    await state.set_state(AdminFSM.prod_cat)
-    await m.answer("Оберіть категорію:", reply_markup=await cats_inline("prod_cat"))
-
-
-@router.callback_query(F.data.startswith("adm:prod_cat:cat_i:"))
-async def prod_pick_cat(cb: types.CallbackQuery, state: FSMContext):
-    cat_i = int(cb.data.split(":")[3])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    await state.update_data(cat=cat, cat_i=cat_i)
-    await state.set_state(AdminFSM.prod_sub)
-
-    await cb.message.answer(
-        "Оберіть підкатегорію або 🧷 Утлет:",
-        reply_markup=await subs_inline(cat_i, "prod_sub", include_no_sub=True)
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:prod_sub:sub_i:"))
-async def prod_pick_sub(cb: types.CallbackQuery, state: FSMContext):
-    _, _, _, cat_i_str, sub_i = cb.data.split(":")
-    cat_i = int(cat_i_str)
-
-    cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i)
-    if not cat or sub is None:
-        return await cb.answer("Некоректний вибір", show_alert=True)
-
-    await state.update_data(cat=cat, sub=sub)
-    await state.set_state(AdminFSM.prod_name)
-    await cb.message.answer("Введіть назву товару:")
-    await cb.answer()
-
-
-@router.message(AdminFSM.prod_name)
-async def prod_name(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    name = (m.text or "").strip()
-    if not name:
-        return await m.answer("Введіть назву текстом.")
-
-    await state.update_data(name=name)
-    await state.set_state(AdminFSM.prod_sku)
-
-    await m.answer(
-        "Введіть <b>артикул (SKU)</b> для товару.\n"
-        "Якщо нема — напишіть <code>-</code>",
-        parse_mode="HTML"
-    )
-
-
-@router.message(AdminFSM.prod_price)
-async def prod_price(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    t = (m.text or "").replace(",", ".").strip()
-    try:
-        price = float(t)
-    except Exception:
-        return await m.answer("❌ Невірна ціна. Введіть число (наприклад 199.99).")
-
-    await state.update_data(price=price)
-    await state.set_state(AdminFSM.prod_desc)
-    await m.answer("Введіть опис (або '-' щоб пропустити):")
-
-
-@router.message(AdminFSM.prod_sku)
-async def prod_sku(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    sku = (m.text or "").strip()
-    if sku == "-":
-        sku = ""
-
-    await state.update_data(sku=sku)
-    await state.set_state(AdminFSM.prod_price)
-    await m.answer("Введіть ціну (наприклад 199.99):")
-
-
-@router.message(AdminFSM.prod_desc)
-async def prod_desc(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    desc = (m.text or "").strip()
-    if desc == "-":
-        desc = ""
-
-    await state.update_data(description=desc, photos=[])
-    await state.set_state(AdminFSM.prod_photos)
-    await m.answer("Надішліть фото (можна кілька). Коли закінчите — напишіть: ГОТОВО\n(або одразу ГОТОВО без фото)")
-
-
-@router.message(AdminFSM.prod_photos, F.photo)
-async def prod_photo(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    photos = st.get("photos", [])
-    photos.append(m.photo[-1].file_id)
-    await state.update_data(photos=photos)
-    await m.answer("📸 Фото додано. Ще фото або напишіть: ГОТОВО")
-
-
-@router.message(AdminFSM.prod_photos)
-async def prod_done(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    if (m.text or "").strip().lower() not in ("готово", "готов", "done", "ok"):
-        return await m.answer("Надішліть фото або напишіть: ГОТОВО")
-
-    st = await state.get_data()
-    cat = st["cat"]
-    sub = st["sub"]
-
-    d = await load_data()
-    pid = next_product_id(d)
-
-    d.setdefault("categories", {})
-    d["categories"].setdefault(cat, {})
-    d["categories"][cat].setdefault(sub, [])
-
-    price = float(st["price"])  # ✅ важливо, щоб price існував
-
-    product = {
-        "id": pid,
-        "name": st["name"],
-
-        "sku": st.get("sku", ""),   # ✅ артикул (для менеджера)
-        "barcode": "",              # ✅ поки пусто (на майбутнє інтеграції)
-
-        "price": price,
-        "base_price": price,
-        "promo_price": 0,
-        "promo_until_ts": None,
-        "description": st.get("description", ""),
-        "photos": st.get("photos", []),
-    }
-
-    d["categories"][cat][sub].append(product)
-    await save_data(d)
-
-    await state.clear()
-    await m.answer(f"✅ Товар додано: {product['name']} (ID: {pid})", reply_markup=staff_menu(m.from_user.id))
-
-# ======= END OF PART 1 =======
-# -------------------- PRODUCTS LIST / EDIT / DELETE --------------------
-
-@router.message(F.text == "🛠 Товари")
-async def products_btn(m: types.Message):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    if not d.get("categories"):
-        return await m.answer("Категорій немає.")
-
-    await m.answer("Оберіть категорію:", reply_markup=await cats_inline("plist_cat"))
-
-
-@router.callback_query(F.data.startswith("adm:plist_cat:cat_i:"))
-async def plist_pick_cat(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[3])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    subs = (d.get("categories", {}) or {}).get(cat, {}) or {}
-    if not subs:
-        await cb.message.answer("У категорії немає підкатегорій/товарів.")
-        return await cb.answer()
-
-    await cb.message.answer(
-        "Оберіть підкатегорію (або 🧷 Утлет):",
-        reply_markup=await subs_inline(cat_i, "plist_sub", include_no_sub=True)
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:plist_sub:sub_i:"))
-async def plist_pick_sub(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    _, _, _, cat_i_str, sub_i = cb.data.split(":")
-    cat_i = int(cat_i_str)
-
-    cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i)
-    if not cat or sub is None:
-        return await cb.answer("Некоректний вибір", show_alert=True)
-
-    items = (d.get("categories", {}) or {}).get(cat, {}).get(sub, []) or []
-    if not items:
-        await cb.message.answer("Товарів немає.")
-        return await cb.answer()
-
-    for p in items:
-        _ensure_product_schema(p)
-        txt = product_card(p)
-
-        if p.get("photos"):
-            await cb.message.answer_photo(
-                p["photos"][0],
-                caption=txt,
-                parse_mode="HTML",
-                reply_markup=await product_actions_kb(int(p["id"]))
-            )
-        else:
-            await cb.message.answer(
-                txt,
-                parse_mode="HTML",
-                reply_markup=await product_actions_kb(int(p["id"]))
-            )
-
-    await cb.answer()
-
-
-# -------------------- HITS --------------------
-
-@router.callback_query(F.data.startswith("adm:hit:"))
-async def toggle_hit(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    _, _, mode, pid_str = cb.data.split(":")
-    pid = int(pid_str)
-
-    hits = _hits_set(d)
-
-    if mode == "on":
-        hits.add(pid)
-        await cb.answer("Додано в Хіти 🔥")
-    else:
-        hits.discard(pid)
-        await cb.answer("Прибрано з Хітів")
-
-    d["hits"] = list(hits)
-    await save_data(d)
-
-    await cb.message.answer("✅ Оновлено (Хіти/Акції).")
-
-
-# -------------------- DELETE PRODUCT --------------------
-
-@router.callback_query(F.data.startswith("adm:delask:"))
-async def product_del_ask(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    pid = int(cb.data.split(":")[2])
-    p = find_product(d, pid)
-    name = p["name"] if p else f"#{pid}"
-    await cb.message.answer(
-        f"⚠️ Видалити товар {name}?",
-        reply_markup=confirm_product_delete_kb(pid)
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:del:"))
-async def product_del(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    pid = int(cb.data.split(":")[2])
-    deleted = False
-
-    for cat in d.get("categories", {}).values():
-        for sub, items in cat.items():
-            for i, p in enumerate(items):
-                if int(p.get("id", -1)) == pid:
-                    items.pop(i)
-                    deleted = True
-                    break
-            if deleted:
-                break
-        if deleted:
-            break
-
-    hits = _hits_set(d)
-    hits.discard(pid)
-    d["hits"] = list(hits)
-
-    if deleted:
-        await save_data(d)
-        await cb.message.answer("✅ Товар видалено.")
-    else:
-        await cb.message.answer("❌ Товар не знайдено.")
-    await cb.answer()
-
-
-# -------------------- EDIT PRODUCT --------------------
-
-@router.callback_query(F.data.startswith("adm:editmenu:"))
-async def edit_menu(cb: types.CallbackQuery, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    pid = int(cb.data.split(":")[2])
-    p = find_product(d, pid)
-    if not p:
-        await cb.message.answer("❌ Товар не знайдено.")
-        return await cb.answer()
-
-    _ensure_product_schema(p)
-
-    await cb.message.answer(
-        f"Редагування: <b>{p['name']}</b>",
-        parse_mode="HTML",
-        reply_markup=edit_menu_kb(pid)
-    )
-    await cb.answer()
-
-
-@router.message(AdminFSM.order_ttn)
-async def admin_set_ttn(m: types.Message, state: FSMContext, bot: Bot):
-    st = await state.get_data()
-    oid = int(st.get("oid", 0) or 0)
-    txt = (m.text or "").strip()
-
-    d = await load_data()
-    order = next((o for o in (d.get("orders", []) or []) if int(o.get("id", -1)) == oid), None)
-    if not order:
-        await state.clear()
-        return await m.answer("❌ Замовлення не знайдено.")
-
-    if txt == "-":
-        order["ttn"] = ""
-    else:
-        order["ttn"] = txt
-
-    await save_data(d)
-    await state.clear()
-
-    await m.answer("✅ ТТН збережено.")
-    # ✅ тепер відправляємо клієнту повідомлення з ТТН (бо text.py вже вміє показати)
-    await _notify_buyer(bot, d, order, f"🚚 Ваше замовлення #{oid} відправлено ✅")
-
-
-@router.callback_query(F.data.startswith("adm:edit:"))
-async def edit_field(cb: types.CallbackQuery, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    _, _, field, pid_str = cb.data.split(":")
-    pid = int(pid_str)
-
-    p = find_product(d, pid)
-    if not p:
-        await cb.message.answer("❌ Товар не знайдено.")
-        return await cb.answer()
-
-    _ensure_product_schema(p)
-
-    await state.clear()
-    await state.update_data(pid=pid)
-
-    if field == "name":
-        await state.set_state(EditProductFSM.name)
-        await cb.message.answer("Введіть нову назву:")
-
-    elif field == "price":
-        await state.set_state(EditProductFSM.price)
-        await cb.message.answer("Введіть нову базову ціну (число):")
-
-    elif field == "desc":
-        await state.set_state(EditProductFSM.desc)
-        await cb.message.answer("Введіть новий опис (або '-' щоб очистити):")
-
-    elif field == "promo":
-        await state.set_state(EditProductFSM.promo_price)
-        await cb.message.answer(
-            "Введіть акційну ціну (число).\n"
-            "Потім я спитаю дату/час завершення (або '-' щоб без дати)."
-        )
-
-    elif field == "promo_clear":
-        p["promo_price"] = 0
-        p["promo_until_ts"] = None
-        await save_data(d)
-        await cb.message.answer("✅ Акцію прибрано.", reply_markup=staff_menu(cb.from_user.id))
-
-    await cb.answer()
-
-
-@router.message(EditProductFSM.name)
-async def edit_name(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    pid = st.get("pid")
-    p = find_product(d, pid)
-    if not p:
-        await state.clear()
-        return await m.answer("❌ Товар не знайдено.")
-
-    _ensure_product_schema(p)
-
-    new = (m.text or "").strip()
-    if not new:
-        return await m.answer("Введіть назву текстом.")
-
-    p["name"] = new
-    await save_data(d)
-    await state.clear()
-    await m.answer("✅ Назву оновлено.", reply_markup=staff_menu(m.from_user.id))
-
-
-@router.message(EditProductFSM.price)
-async def edit_price(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    pid = st.get("pid")
-    p = find_product(d, pid)
-    if not p:
-        await state.clear()
-        return await m.answer("❌ Товар не знайдено.")
-
-    _ensure_product_schema(p)
-
-    try:
-        price = float((m.text or "").replace(",", "."))
-    except Exception:
-        return await m.answer("Введіть число (наприклад 199.99).")
-
-    p["base_price"] = price
-    p["price"] = price
-    await save_data(d)
-
-    await state.clear()
-    await m.answer("✅ Ціну оновлено.", reply_markup=staff_menu(m.from_user.id))
-
-
-@router.message(EditProductFSM.desc)
-async def edit_desc(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    pid = st.get("pid")
-    p = find_product(d, pid)
-    if not p:
-        await state.clear()
-        return await m.answer("❌ Товар не знайдено.")
-
-    _ensure_product_schema(p)
-
-    desc = (m.text or "").strip()
-    if desc == "-":
-        desc = ""
-
-    p["description"] = desc
-    await save_data(d)
-
-    await state.clear()
-    await m.answer("✅ Опис оновлено.", reply_markup=staff_menu(m.from_user.id))
-
-
-# -------- PROMO FLOW --------
-
-@router.message(EditProductFSM.promo_price)
-async def edit_promo_price(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    pid = st.get("pid")
-    p = find_product(d, pid)
-    if not p:
-        await state.clear()
-        return await m.answer("❌ Товар не знайдено.")
-
-    _ensure_product_schema(p)
-
-    try:
-        promo = float((m.text or "").replace(",", "."))
-    except Exception:
-        return await m.answer("Введіть число (наприклад 1499.99).")
-
-    if promo <= 0:
-        return await m.answer("Акційна ціна має бути > 0.")
-
-    p["promo_price"] = promo
-    await save_data(d)
-
-    await state.set_state(EditProductFSM.promo_until)
-    await m.answer(
-        "Вкажіть дату завершення акції:\n"
-        "<b>YYYY-MM-DD</b> або <b>YYYY-MM-DD HH:MM</b>\n"
-        "Або <b>-</b> без дати.",
-        parse_mode="HTML"
-    )
-
-
-@router.message(EditProductFSM.promo_until)
-async def edit_promo_until(m: types.Message, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, m.from_user.id):
-        return await m.answer("⛔️ Немає доступу")
-
-    st = await state.get_data()
-    pid = st.get("pid")
-    p = find_product(d, pid)
-    if not p:
-        await state.clear()
-        return await m.answer("❌ Товар не знайдено.")
-
-    _ensure_product_schema(p)
-
-    txt = (m.text or "").strip()
-
-    if txt == "-":
-        p["promo_until_ts"] = None
-        await save_data(d)
-        await state.clear()
-        return await m.answer("✅ Акцію встановлено (без дати).", reply_markup=staff_menu(m.from_user.id))
-
-    try:
-        if len(txt) == 10:
-            dt = datetime.strptime(txt, "%Y-%m-%d")
-        else:
-            dt = datetime.strptime(txt, "%Y-%m-%d %H:%M")
-        ts = int(dt.replace(tzinfo=timezone.utc).timestamp())
-    except Exception:
-        return await m.answer(
-            "❌ Невірний формат.\n"
-            "• 2026-01-20\n"
-            "• 2026-01-20 23:59\n"
-            "• або '-'"
-        )
-
-    p["promo_until_ts"] = ts
-    await save_data(d)
-
-    await state.clear()
-    await m.answer("✅ Акцію встановлено.", reply_markup=staff_menu(m.from_user.id))
-
-
-# ==================== END OF FILE ====================
+    # timeline / set_ttn (якщо в тебе окремі хендлери) — тут не ламаємо
+    return await cb.answer("OK")
+# =================== END PART 6/8 (REPEAT) ===================
