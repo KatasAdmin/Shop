@@ -1,5 +1,7 @@
 # handlers/admin.py
 from __future__ import annotations
+import re
+from html import escape
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -131,7 +133,7 @@ async def _sub_by_index(cat_i: int, sub_i: str) -> str | None:
 # MENUS / INLINE KB
 # =========================================================
 
-def panel_main_kb(uid: int) -> types.ReplyKeyboardMarkup:
+def panel_main_reply_kb(uid: int) -> types.ReplyKeyboardMarkup:
     rows = [
         [types.KeyboardButton(text="➕ Додати категорію"), types.KeyboardButton(text="➕ Додати підкатегорію")],
         [types.KeyboardButton(text="➕ Додати товар"), types.KeyboardButton(text="🛠 Товари")],
@@ -353,7 +355,6 @@ async def plist_sub(cb: types.CallbackQuery):
     await cb.answer()
 # =========================
 
-import re
 from typing import Optional
 
 from orders_timeline import (
@@ -1653,68 +1654,158 @@ async def set_role(cb: types.CallbackQuery):
 # BUYER SEARCH (AdminFSM.search_buyer)
 # =========================================================
 
-def _match_user(order: dict, q: str) -> bool:
-    ql = (q or "").strip().lower()
-    if not ql:
-        return False
 
-    uid = str(order.get("user_id", "") or "")
-    uname = str(order.get("username", "") or "")
-    name = str(order.get("name", "") or order.get("full_name", "") or "")
+def _norm_username(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("@"):
+        s = s[1:]
+    return s.lower()
 
-    if ql.isdigit() and uid == ql:
-        return True
-
-    if ql.startswith("@") and uname.lower() == ql[1:]:
-        return True
-
-    # частковий збіг
-    if ql in uname.lower() or ql in name.lower():
-        return True
-
-    return False
-
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 @router.message(AdminFSM.search_buyer)
-async def search_buyer(m: types.Message, state: FSMContext):
+async def search_buyer_input(m: types.Message, state: FSMContext):
     d = await load_data()
-    if not is_staff(d, m.from_user.id) or not can_manage_orders(d, m.from_user.id):
-        await state.clear()
-        return await m.answer("⛔️ Немає доступу")
 
-    q = (m.text or "").strip()
-    if not q:
-        return await m.answer("Введіть запит.")
+    q_raw = (m.text or "").strip()
+    q = _norm_text(q_raw)
+    q_user = _norm_username(q_raw)
 
-    orders = d.get("orders", []) or []
-    found = [o for o in orders if _match_user(o, q)]
-
-    if not found:
-        return await m.answer("Нічого не знайдено.")
-
-    # групуємо по user_id
-    groups: dict[int, list[dict]] = {}
-    for o in found:
+    uid_as_int = None
+    if q_raw.isdigit():
         try:
-            uid = int(o.get("user_id", 0) or 0)
+            uid_as_int = int(q_raw)
         except Exception:
-            uid = 0
-        groups.setdefault(uid, []).append(o)
+            uid_as_int = None
 
-    for uid, arr in groups.items():
-        arr_sorted = sorted(arr, key=lambda x: int(x.get("created_ts", 0) or 0), reverse=True)
-        link = f'<a href="tg://user?id={uid}">👤 Покупець</a>' if uid else "👤 Покупець"
-        await m.answer(f"{link}\n<b>Знайдено замовлень:</b> {len(arr_sorted)}", parse_mode="HTML")
+    users = d.get("users", {}) or {}
+    orders = d.get("orders", []) or []
 
-        for o in arr_sorted[:15]:  # ліміт щоб не спамити
-            products = _order_products(d, o)
-            kb = order_actions_kb(int(o.get("id", 0)), str(o.get("status", "")), d=d, uid=m.from_user.id)
-            await m.answer(
-                order_premium_text(d, o, products),
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+    found = {}  # uid -> user dict
 
+    # 1) пошук у d["users"]
+    for uid_str, u in users.items():
+        if not isinstance(u, dict):
+            continue
+
+        try:
+            uid_i = int(u.get("id") or uid_str)
+        except Exception:
+            continue
+
+        username = (u.get("username") or "")
+        full_name = (u.get("full_name") or "")
+        username_n = _norm_username(username)
+        full_name_n = _norm_text(full_name)
+
+        ok = False
+        if uid_as_int is not None and uid_i == uid_as_int:
+            ok = True
+        elif q_user and username_n and q_user == username_n:
+            ok = True
+        elif q and (q in full_name_n or q in username_n):
+            ok = True
+
+        if ok:
+            found[uid_i] = {
+                "id": uid_i,
+                "username": username,
+                "full_name": full_name,
+                "first_seen_ts": int(u.get("first_seen_ts", 0) or 0),
+                "last_seen_ts": int(u.get("last_seen_ts", 0) or 0),
+            }
+
+    # 2) fallback: пошук у orders (навіть якщо нема в users)
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+
+        try:
+            uid_i = int(o.get("user_id", -1))
+        except Exception:
+            continue
+        if uid_i <= 0:
+            continue
+
+        username = (
+            o.get("user_username")
+            or o.get("username")
+            or o.get("from_username")
+            or ""
+        )
+        full_name = (
+            o.get("user_full_name")
+            or o.get("full_name")
+            or o.get("name")
+            or ""
+        )
+
+        username_n = _norm_username(username)
+        full_name_n = _norm_text(full_name)
+
+        ok = False
+        if uid_as_int is not None and uid_i == uid_as_int:
+            ok = True
+        elif q_user and username_n and q_user == username_n:
+            ok = True
+        elif q and (q in full_name_n or q in username_n):
+            ok = True
+
+        if ok and uid_i not in found:
+            found[uid_i] = {
+                "id": uid_i,
+                "username": username,
+                "full_name": full_name,
+                "first_seen_ts": 0,
+                "last_seen_ts": int(o.get("created_ts", 0) or 0),
+            }
+
+    def orders_count(uid: int) -> int:
+        c = 0
+        for o in orders:
+            try:
+                if int(o.get("user_id", -1)) == int(uid):
+                    c += 1
+            except Exception:
+                pass
+        return c
+
+    found_users = list(found.values())
+
+    if not found_users:
+        await m.answer(
+            "❌ Нічого не знайшов.\n\n"
+            f"У базі зараз:\n"
+            f"• users: <b>{len(users)}</b>\n"
+            f"• orders: <b>{len(orders)}</b>\n\n"
+            "Спробуй ввести:\n"
+            "• ID (число)\n"
+            "• @username\n"
+            "• частину імені\n\n"
+            "Якщо users = 0 — зайди в бота як юзер і натисни /start.",
+            parse_mode="HTML",
+        )
+        await state.clear()
+        return
+
+    found_users.sort(key=lambda x: int(x.get("last_seen_ts", 0) or 0), reverse=True)
+
+    lines = ["✅ <b>Знайдені користувачі:</b>", ""]
+    for u in found_users[:10]:
+        uid = int(u["id"])
+        uname = u.get("username") or ""
+        name = u.get("full_name") or "—"
+        cnt = orders_count(uid)
+
+        user_link = f'<a href="tg://user?id={uid}">{escape(name)}</a>'
+        uname_txt = f"@{escape(uname)}" if uname else "—"
+
+        lines.append(f"• {user_link}")
+        lines.append(f"  ID: <code>{uid}</code> | username: <code>{uname_txt}</code> | замовлень: <b>{cnt}</b>")
+        lines.append("")
+
+    await m.answer("\n".join(lines).strip(), parse_mode="HTML", disable_web_page_preview=True)
     await state.clear()
 
 # =========================================================
