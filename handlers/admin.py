@@ -1605,20 +1605,34 @@ async def add_manager(m: types.Message, state: FSMContext):
         await state.clear()
         return await m.answer("⛔️ Тільки адмін")
 
+    # ✅ ВСТАВИТИ ОСЬ ТУТ (ОДРАЗУ ПІСЛЯ ПЕРЕВІРКИ ПРАВ)
     txt = (m.text or "").strip()
+
+    if txt.startswith("-"):
+        try:
+            uid = int(txt[1:])
+        except Exception:
+            return await m.answer("Формат: <code>-123456789</code>", parse_mode="HTML")
+
+        d.get("roles", {}).pop(str(uid), None)
+
+        d["managers"] = [x for x in (d.get("managers", []) or []) if int(x) != uid]
+
+        await save_data(d)
+        await state.clear()
+        return await m.answer(f"✅ Доступ для <code>{uid}</code> видалено", parse_mode="HTML")
+
+    # 👇 ДАЛІ ЙДЕ ТВОЯ СТАРА ЛОГІКА ДОДАВАННЯ МЕНЕДЖЕРА
     try:
         uid = int(txt)
     except Exception:
         return await m.answer("ID має бути числом.")
 
-    # додаємо в managers (для сумісності зі старим is_staff)
     d.setdefault("managers", [])
     if uid not in [int(x) for x in (d.get("managers", []) or [])]:
         d["managers"].append(uid)
 
-    # питаємо роль через кнопки
     kb = InlineKeyboardBuilder()
-    kb.button(text="👑 Адмін", callback_data=f"adm:role:set:{uid}:admin")
     kb.button(text="👨‍💼 Менеджер", callback_data=f"adm:role:set:{uid}:manager")
     kb.button(text="📦 Пакувальник", callback_data=f"adm:role:set:{uid}:packer")
     kb.button(text="⬅️ Скасувати", callback_data="adm:cancel")
