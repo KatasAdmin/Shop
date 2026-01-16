@@ -1,6 +1,8 @@
 # handlers/admin.py
 from __future__ import annotations
 import re
+from audit import fmt_ts
+from audit import audit_add, pick_fields
 from html import escape
 
 from datetime import datetime, timezone
@@ -269,6 +271,7 @@ def panel_settings_kb(uid: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if is_admin(uid):
         kb.button(text="👤 Додати менеджера", callback_data="adm:panel:add_manager")
+        kb.button(text="📜 Історія змін", callback_data="adm:audit:last:20:0")
     kb.button(text="⬅️ Назад", callback_data="adm:panel:back")
     kb.adjust(1)
     return kb.as_markup()
@@ -277,6 +280,73 @@ def panel_settings_kb(uid: int) -> types.InlineKeyboardMarkup:
 # =========================================================
 # COMMON ENTRY / CANCEL
 # =========================================================
+@router.callback_query(F.data.startswith("adm:audit:last:"))
+async def audit_show(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id):
+        return await cb.answer("Немає доступу", show_alert=True)
+
+    # adm:audit:last:<limit>:<offset>
+    parts = cb.data.split(":")
+    limit = int(parts[3])
+    offset = int(parts[4])
+
+    logs = list(d.get("audit", []) or [])
+    logs = list(reversed(logs))  # newest first
+
+    chunk = logs[offset: offset + limit]
+    if not chunk:
+        await cb.message.answer("📜 Історія змін порожня.")
+        return await cb.answer()
+
+    lines = ["📜 <b>Історія змін</b>\n"]
+    for e in chunk:
+        ts = fmt_ts(e.get("ts", 0))
+        actor_id = e.get("actor_id", 0)
+        actor_role = e.get("actor_role", "manager")
+        action = e.get("action", "")
+        ent = e.get("entity", {}) or {}
+        et = ent.get("type", "")
+        eid = ent.get("id", "")
+        ename = ent.get("name", "")
+
+        lines.append(
+            f"🕒 <code>{ts}</code>\n"
+            f"👤 <a href=\"tg://user?id={actor_id}\">{actor_id}</a> (<code>{actor_role}</code>)\n"
+            f"⚙️ <code>{action}</code>\n"
+            f"📌 <b>{et}</b> | ID: <code>{eid}</code> | <b>{escape(str(ename))}</b>\n"
+        )
+
+        before = e.get("before")
+        after = e.get("after")
+        if isinstance(before, dict) or isinstance(after, dict):
+            lines.append("🔁 <b>Зміни:</b>")
+            # показуємо тільки ключі, що змінювались (простий diff)
+            keys = set()
+            if isinstance(before, dict): keys |= set(before.keys())
+            if isinstance(after, dict): keys |= set(after.keys())
+            for k in sorted(keys):
+                bv = None if not isinstance(before, dict) else before.get(k)
+                av = None if not isinstance(after, dict) else after.get(k)
+                if bv != av:
+                    lines.append(f" • <code>{k}</code>: <code>{escape(str(bv))}</code> → <code>{escape(str(av))}</code>")
+        note = (e.get("note") or "").strip()
+        if note:
+            lines.append(f"📝 {escape(note)}")
+
+        lines.append("\n———\n")
+
+    kb = InlineKeyboardBuilder()
+    if offset + limit < len(logs):
+        kb.button(text="➡️ Далі", callback_data=f"adm:audit:last:{limit}:{offset+limit}")
+    if offset > 0:
+        kb.button(text="⬅️ Назад", callback_data=f"adm:audit:last:{limit}:{max(0, offset-limit)}")
+    kb.button(text="🔙 В панель", callback_data="adm:panel:settings")
+    kb.adjust(2, 1)
+
+    await cb.message.answer("\n".join(lines).strip(), parse_mode="HTML", reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    await cb.answer()
+
 
 @router.message(Command("admin"))
 async def admin_cmd(m: types.Message, state: FSMContext):
