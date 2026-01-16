@@ -367,51 +367,51 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
     # orders lists (реалізація в Part 2/3, щоб юзало нові кнопки/ролі)
     # ===== ORDERS LISTS =====
 
-if action == "orders_paid":
-    paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
-    if not paid:
-        await cb.message.answer("Немає нових оплачених замовлень.")
+    if action == "orders_paid":
+        paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
+        if not paid:
+            await cb.message.answer("Немає нових оплачених замовлень.")
+            return await cb.answer()
+
+        for o in paid:
+            products = _order_products(d, o)
+            await cb.message.answer(
+                order_premium_text(d, o, products),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
+            )
         return await cb.answer()
 
-    for o in paid:
-        products = _order_products(d, o)
-        await cb.message.answer(
-            order_premium_text(d, o, products),
-            parse_mode="HTML",
-            reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
-        )
-    return await cb.answer()
 
+    if action == "orders_all":
+        orders = d.get("orders", []) or []
+        if not orders:
+            await cb.message.answer("Замовлень ще немає.")
+            return await cb.answer()
 
-if action == "orders_all":
-    orders = d.get("orders", []) or []
-    if not orders:
-        await cb.message.answer("Замовлень ще немає.")
+        for o in reversed(orders):
+            products = _order_products(d, o)
+            await cb.message.answer(
+                order_premium_text(d, o, products),
+                parse_mode="HTML",
+                reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
+            )
         return await cb.answer()
 
-    for o in reversed(orders):
-        products = _order_products(d, o)
+
+    if action == "buyer_search":
+        await state.set_state(AdminFSM.search_buyer)
         await cb.message.answer(
-            order_premium_text(d, o, products),
-            parse_mode="HTML",
-            reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
+            "🔎 <b>Пошук покупця</b>\n\n"
+            "Введіть:\n"
+            "• ID\n"
+            "• @username\n"
+            "• частину імені",
+            parse_mode="HTML"
         )
-    return await cb.answer()
+        return await cb.answer()
 
-
-if action == "buyer_search":
-    await state.set_state(AdminFSM.search_buyer)
-    await cb.message.answer(
-        "🔎 <b>Пошук покупця</b>\n\n"
-        "Введіть:\n"
-        "• ID\n"
-        "• @username\n"
-        "• частину імені",
-        parse_mode="HTML"
-    )
-    return await cb.answer()
-
-    return await cb.answer("Невідома дія", show_alert=True)
+        return await cb.answer("Невідома дія", show_alert=True)
 
 
 # =========================================================
