@@ -454,17 +454,41 @@ def product_page_kb(cat: str, sub: str, i: int, total: int, pid: int, fav: bool)
 
 async def show_product_page(cb: types.CallbackQuery, cat: str, sub: str, i: int):
     d = await load_data()
-    items = d.get("categories", {}).get(cat, {}).get(sub, []) or []
-    total = len(items)
-    if total == 0:
+
+    raw_items = d.get("categories", {}).get(cat, {}).get(sub, []) or []
+    if not raw_items:
         await cb.message.answer("Товарів немає.")
         return
 
+    # нормалізуємо до списку pid
+    pids: List[int] = []
+    for x in raw_items:
+        if isinstance(x, dict):
+            # якщо десь лишився старий формат
+            try:
+                pids.append(int(x.get("id")))
+            except Exception:
+                continue
+        else:
+            try:
+                pids.append(int(x))
+            except Exception:
+                continue
+
+    if not pids:
+        await cb.message.answer("Товарів немає.")
+        return
+
+    total = len(pids)
     i = max(0, min(i, total - 1))
-    p = items[i]
+
+    pid = int(pids[i])
+    p = find_product(d, pid)
+    if not p:
+        await cb.message.answer("Товар не знайдено (битий pid у категорії).")
+        return
 
     txt = product_card(p)
-    pid = int(p["id"])
     fav = is_fav(d, cb.from_user.id, pid)
     kb = product_page_kb(cat, sub, i, total, pid, fav)
 
@@ -1591,6 +1615,7 @@ async def hist_page(cb: types.CallbackQuery):
 
 
 def _render_timeline(o: dict) -> str:
+    _ensure_events(o)
     evs = o.get("events", []) or []
     if not evs:
         return "📜 <b>Хронологія</b>\n\nПоки що подій нема."
@@ -1598,7 +1623,7 @@ def _render_timeline(o: dict) -> str:
     lines: List[str] = []
     lines.append("📜 <b>Хронологія</b>")
     lines.append("")
-    # сортуємо по ts
+
     evs_sorted = sorted(evs, key=lambda x: int(x.get("ts", 0) or 0))
 
     for e in evs_sorted:
@@ -1610,7 +1635,6 @@ def _render_timeline(o: dict) -> str:
         else:
             lines.append(f"• <b>{title}</b> — <i>{ts}</i>")
 
-    # ✅ Якщо є ТТН — показуємо
     ttn = (o.get("np_ttn") or o.get("ttn") or "").strip()
     if ttn:
         lines.append("")
