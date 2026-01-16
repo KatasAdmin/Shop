@@ -16,25 +16,16 @@ from models import KVStore
 
 def default_data() -> Dict[str, Any]:
     return {
-        # каталог
-        "products": [],                  # ← ВСІ товари ТУТ
-        "categories": {},                # cat -> sub -> [pid, pid]
-
-        # користувачі / кошики
-        "carts": {},                     # uid -> {pid: qty}
-        "favorites": {},                 # uid -> [pid]
-        "users": {},                     # uid -> meta (name, phone, email, external_id...)
-
-        # замовлення
+        "categories": {},
+        "carts": {},
         "orders": [],
-
-        # персонал
         "managers": [],
-        "roles": {},                     # uid -> admin/manager/packer
-
-        # маркетинг
-        "hits": [],                      # [pid]
-        "user_tags": {},                 # uid -> [tags]
+        "favorites": {},
+        "hits": [],
+        "users": {},
+        "user_tags": {},
+        "roles": {},     # якщо ще нема
+        "audit": [],     # ✅ ОЦЕ ДОДАЙ
     }
 
 
