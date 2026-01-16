@@ -1791,6 +1791,42 @@ async def search_buyer_input(m: types.Message, state: FSMContext):
 
     found_users.sort(key=lambda x: int(x.get("last_seen_ts", 0) or 0), reverse=True)
 
+# ✅ ТРЕТЄ: якщо знайшли рівно 1 користувача — показуємо повну карточку + останнє замовлення
+    if len(found_users) == 1:
+        u = found_users[0]
+        uid = int(u["id"])
+
+        arr = _last_orders_of_user(d, uid)
+        last_order = arr[0] if arr else None
+        total = len(arr)
+
+        await m.answer(
+            buyer_card_text(uid, u, last_order, total),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=buyer_open_kb(uid),
+        )
+
+        if last_order:
+            products = _order_products(d, last_order)
+            kb = order_actions_kb(
+                int(last_order.get("id", 0)),
+                str(last_order.get("status", "")),
+                d=d,
+                uid=m.from_user.id
+            )
+            await m.answer(
+                order_premium_text(d, last_order, products),
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        else:
+            await m.answer("📭 У цього покупця ще немає замовлень.")
+
+        await state.clear()
+        return
+
+    # ⬇️ якщо 2+ збігів — показуємо список (твій старий код)
     lines = ["✅ <b>Знайдені користувачі:</b>", ""]
     for u in found_users[:10]:
         uid = int(u["id"])
@@ -1807,6 +1843,60 @@ async def search_buyer_input(m: types.Message, state: FSMContext):
 
     await m.answer("\n".join(lines).strip(), parse_mode="HTML", disable_web_page_preview=True)
     await state.clear()
+
+def _pick_phone_from_order(o: dict) -> str:
+    """
+    Підтягуємо телефон з різних можливих ключів.
+    Підстрой під свій формат збереження.
+    """
+    for k in ("phone", "user_phone", "tel", "telephone", "contact_phone", "buyer_phone"):
+        v = (o.get(k) or "").strip()
+        if v:
+            return v
+    # якщо в тебе телефон лежить у shipping/contacts
+    ship = o.get("shipping") or o.get("delivery") or {}
+    if isinstance(ship, dict):
+        for k in ("phone", "tel"):
+            v = (ship.get(k) or "").strip()
+            if v:
+                return v
+    return ""
+
+def _last_orders_of_user(d: dict, uid: int) -> list[dict]:
+    orders = d.get("orders", []) or []
+    arr = []
+    for o in orders:
+        try:
+            if int(o.get("user_id", -1)) == int(uid):
+                arr.append(o)
+        except Exception:
+            pass
+    arr.sort(key=lambda x: int(x.get("created_ts", 0) or 0), reverse=True)
+    return arr
+
+def buyer_card_text(uid: int, u: dict, last_order: dict | None, total_orders: int) -> str:
+    name = (u.get("full_name") or "—").strip()
+    username = (u.get("username") or "").strip()
+    phone = _pick_phone_from_order(last_order or {}) if last_order else ""
+    phone_txt = f"<code>{escape(phone)}</code>" if phone else "—"
+    uname_txt = f"@{escape(username)}" if username else "—"
+
+    return (
+        f"👤 <b>Покупець</b>: <a href=\"tg://user?id={uid}\">{escape(name)}</a>\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Username: <code>{uname_txt}</code>\n"
+        f"Телефон (з останнього замовлення): {phone_txt}\n"
+        f"Замовлень всього: <b>{total_orders}</b>"
+    )
+
+def buyer_open_kb(uid: int) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📦 Показати 5 замовлень", callback_data=f"adm:buyer:orders:{uid}:5")
+    kb.button(text="📦 Показати 15 замовлень", callback_data=f"adm:buyer:orders:{uid}:15")
+    kb.button(text="⬅️ Назад", callback_data="adm:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
 
 # =========================================================
 
@@ -1851,6 +1941,66 @@ def _pids_in_sub(d: dict, cat: str, sub: str) -> list[int]:
             seen.add(pid)
             uniq.append(pid)
     return uniq
+
+
+@router.callback_query(F.data.startswith("adm:buyer:orders:"))
+async def buyer_orders_cb(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_manage_orders(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    # adm:buyer:orders:<uid>:<n>
+    parts = cb.data.split(":")
+    uid = int(parts[3])
+    n = int(parts[4])
+
+    arr = _last_orders_of_user(d, uid)
+    if not arr:
+        await cb.message.answer("📭 У цього користувача ще немає замовлень.")
+        return await cb.answer()
+
+    await cb.message.answer(f"📦 <b>Останні {min(n, len(arr))} замовлень</b> для <code>{uid}</code>:", parse_mode="HTML")
+
+    for o in arr[:n]:
+        products = _order_products(d, o)
+        kb = order_actions_kb(int(o.get("id", 0)), str(o.get("status", "")), d=d, uid=cb.from_user.id)
+        await cb.message.answer(
+            order_premium_text(d, o, products),
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:buyer:orders:"))
+async def buyer_orders_cb(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_manage_orders(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    # adm:buyer:orders:<uid>:<limit>
+    parts = cb.data.split(":")
+    uid = int(parts[3])
+    limit = int(parts[4])
+
+    arr = _last_orders_of_user(d, uid)
+    if not arr:
+        await cb.message.answer("📭 Замовлень немає.")
+        return await cb.answer()
+
+    await cb.message.answer(f"📦 <b>Останні замовлення покупця</b> (показую {min(limit, len(arr))}):", parse_mode="HTML")
+
+    for o in arr[:limit]:
+        products = _order_products(d, o)
+        kb = order_actions_kb(int(o.get("id", 0)), str(o.get("status", "")), d=d, uid=cb.from_user.id)
+        await cb.message.answer(
+            order_premium_text(d, o, products),
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:plist_cat:cat_i:"))
