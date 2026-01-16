@@ -596,7 +596,7 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
             "• ID (число)\n"
             "• @username\n"
             "• частину імені\n\n"
-            "Приклад: <code>123456789</code> або <code>@katas</code або <code>Віктор</code>",
+            "Приклад: <code>123456789</code> або <code>@katas</code> або <code>Віктор</code>",
             parse_mode="HTML"
         )
         return await cb.answer()
