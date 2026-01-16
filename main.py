@@ -14,7 +14,12 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.include_router(user_router)
+from handlers import user_router, admin_router, admin_orders_router
+
+dp.include_router(user_router)
+dp.include_router(admin_router)
+
+if admin_orders_router:
     dp.include_router(admin_orders_router)
 
     await dp.start_polling(bot)
