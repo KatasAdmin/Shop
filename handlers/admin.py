@@ -883,6 +883,93 @@ async def cat_mgmt_choose(cb: types.CallbackQuery):
 
     await cb.message.answer("\n".join(text_lines), parse_mode="HTML", reply_markup=kb.as_markup())
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:catdelask:"))
+async def cat_delete_ask(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    cat_i = int(cb.data.split(":")[2])
+    cats = list((d.get("categories", {}) or {}).keys())
+
+    if cat_i < 0 or cat_i >= len(cats):
+        return await cb.answer("Категорію не знайдено", show_alert=True)
+
+    cat = cats[cat_i]
+    subs = (d.get("categories", {}) or {}).get(cat, {}) or {}
+
+    # рахуємо всі pid у категорії
+    total_pids = []
+    for arr in subs.values():
+        if isinstance(arr, list):
+            total_pids.extend(arr)
+
+    total = len(set(int(x) for x in total_pids if str(x).isdigit()))
+
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=f"✅ Так, видалити (товари → 🧷 Утлет)",
+        callback_data=f"adm:catdeldo:{cat_i}"
+    )
+    kb.button(text="❌ Ні", callback_data="adm:cancel")
+    kb.adjust(1)
+
+    await cb.message.answer(
+        f"⚠️ Видалити категорію <b>{cat}</b>?\n\n"
+        f"Товарів у категорії: <b>{total}</b>\n"
+        f"Усі товари буде перенесено в <b>🧷 Утлет</b>.",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:catdeldo:"))
+async def cat_delete_do(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    cat_i = int(cb.data.split(":")[2])
+    cats = list((d.get("categories", {}) or {}).keys())
+
+    if cat_i < 0 or cat_i >= len(cats):
+        return await cb.answer("Категорію не знайдено", show_alert=True)
+
+    cat = cats[cat_i]
+    subs = d["categories"].get(cat, {})
+
+    # переносимо всі товари в 🧷 Утлет
+    outlet = []
+    for arr in subs.values():
+        if isinstance(arr, list):
+            for pid in arr:
+                try:
+                    outlet.append(int(pid))
+                except Exception:
+                    pass
+
+    # видаляємо категорію
+    d["categories"].pop(cat, None)
+
+    # якщо є товари — кладемо їх у загальний Утлет
+    if outlet:
+        d.setdefault("categories", {})
+        d["categories"].setdefault("🧷 Утлет", {"_": []})
+        d["categories"]["🧷 Утлет"].setdefault("_", [])
+        exist = set(int(x) for x in d["categories"]["🧷 Утлет"]["_"])
+        for pid in outlet:
+            if pid not in exist:
+                d["categories"]["🧷 Утlet"]["_"].append(pid)
+
+    await save_data(d)
+
+    await cb.message.answer(f"✅ Категорію <b>{cat}</b> видалено.", parse_mode="HTML")
+    await cb.answer()
+
+
 # =========================================================
 # ADD CATEGORY (FSM AdminFSM.add_cat)
 # =========================================================
@@ -2076,6 +2163,10 @@ async def adm_submgmt_open(cb: types.CallbackQuery):
     kb.button(text="📦 Товари в підкатегорії", callback_data=f"adm:plist_sub:sub_i:{cat_i}:{sub_token}")
     if can_delete:
         kb.button(text="🗑 Видалити підкатегорію", callback_data=f"adm:subdelask:{cat_i}:{sub_token}")
+        kb.button(
+    text="🗑 Видалити категорію",
+    callback_data=f"adm:catdelask:{cat_i}"
+)
     kb.button(text="⬅️ Назад", callback_data="adm:panel:cats")
     kb.adjust(1)
 
