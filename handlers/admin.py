@@ -1440,7 +1440,16 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
         await _reply_updated(f"✅ Замовлення #{oid} закрито (done).")
         return await cb.answer()
 
-    # ---- історія покупця (як було, але kb тепер рольовий) ----
+    if action == "timeline":
+        txt = render_timeline_text(order)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data="adm:cancel")
+        kb.adjust(1)
+        await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb.as_markup())
+        return await cb.answer()
+
+
+     # ---- історія покупця (як було, але kb тепер рольовий) ----
     if action == "history":
         uid = int(order.get("user_id", 0) or 0)
         if not uid:
