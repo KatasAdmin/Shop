@@ -836,11 +836,6 @@ async def admin_set_ttn_msg(m: types.Message, state: FSMContext, bot: Bot):
 # =========================
 # PART 3A/3 — CATALOG CORE
 # =========================
-
-# =========================================================
-# CATEGORIES / SUBCATEGORIES (MANAGE)
-# =========================================================
-
 @router.callback_query(F.data.startswith("adm:catmgmt:cat_i:"))
 async def cat_mgmt_choose(cb: types.CallbackQuery):
     d = await load_data()
@@ -855,28 +850,31 @@ async def cat_mgmt_choose(cb: types.CallbackQuery):
     subs = (d.get("categories", {}) or {}).get(cat, {}) or {}
     subs_list = [s for s in subs.keys() if s != NO_SUB]
 
-    lines = [f"🗂 <b>{cat}</b>", ""]
-    if subs_list:
-        lines.append("Підкатегорії:")
-        for s in subs_list:
-            lines.append(f"• {s}")
-    else:
-        lines.append("Підкатегорій поки немає.")
+    text_lines = [
+        f"🗂 <b>{cat}</b>",
+        "",
+        "Оберіть підкатегорію для керування:",
+    ]
 
     kb = InlineKeyboardBuilder()
+
+    # Утлет (NO_SUB)
+    kb.button(text="🧷 Утлет", callback_data=f"adm:catmgmt:sub_i:{cat_i}:n")
+
+    # Звичайні підкатегорії
+    for j, s in enumerate(subs_list):
+        kb.button(text=str(s), callback_data=f"adm:catmgmt:sub_i:{cat_i}:{j}")
+
+    kb.adjust(1)
+
+    # Службові кнопки
     kb.button(text="➕ Додати підкатегорію", callback_data=f"adm:sub_add:cat_i:{cat_i}")
-    kb.button(text="🧷 Утлет (NO_SUB)", callback_data=f"adm:sub_add:sub_i:{cat_i}:n")
-
-    # перегляд товарів у категорії
     kb.button(text="📦 Товари в категорії", callback_data=f"adm:plist_cat:cat_i:{cat_i}")
-
     kb.button(text="⬅️ Назад", callback_data="adm:panel:cats")
     kb.adjust(1)
 
-    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+    await cb.message.answer("\n".join(text_lines), parse_mode="HTML", reply_markup=kb.as_markup())
     await cb.answer()
-
-
 # =========================================================
 # ADD CATEGORY (FSM AdminFSM.add_cat)
 # =========================================================
@@ -1722,8 +1720,8 @@ async def search_buyer(m: types.Message, state: FSMContext):
 def _pids_in_sub(d: dict, cat: str, sub: str) -> list[int]:
     """
     Дістаємо pid'и товарів у підкатегорії:
-    1) categories[cat][sub] як список pid
-    2) fallback: по полях товару category/subcategory (якщо так зберігаєш)
+    1) categories[cat][sub] як список pid (головне джерело)
+    2) fallback: по полях товару category + sub_category / subcategory
     """
     out: list[int] = []
 
@@ -1738,10 +1736,16 @@ def _pids_in_sub(d: dict, cat: str, sub: str) -> list[int]:
             except Exception:
                 pass
 
+    # fallback якщо bucket порожній/не заповнений
     if not out:
         for p in (d.get("products", []) or []):
             try:
-                if str(p.get("category", "")) == str(cat) and str(p.get("subcategory", "")) == str(sub):
+                pc = str(p.get("category", "") or "")
+                ps = str(
+                    p.get("sub_category", p.get("subcategory", ""))  # підтримка обох назв
+                    or NO_SUB
+                )
+                if pc == str(cat) and ps == str(sub):
                     out.append(int(p.get("id")))
             except Exception:
                 continue
@@ -1818,3 +1822,113 @@ async def adm_submgmt_open(cb: types.CallbackQuery):
         reply_markup=kb.as_markup(),
     )
     return await cb.answer()
+
+
+# =========================================================
+# SUBCATEGORY DELETE (ASK / DO)
+# =========================================================
+
+@router.callback_query(F.data.startswith("adm:subdelask:"))
+async def sub_delete_ask(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    # adm:subdelask:<cat_i>:<sub_token>
+    parts = cb.data.split(":")
+    cat_i = int(parts[2])
+    sub_token = parts[3]
+
+    cat = await _cat_by_index(cat_i)
+    sub = await _sub_by_index(cat_i, sub_token)
+
+    if not cat or sub is None:
+        return await cb.answer("Не знайдено", show_alert=True)
+
+    # Утлет видаляти не можна
+    if sub == NO_SUB:
+        return await cb.answer("🧷 Утлет видаляти не можна", show_alert=True)
+
+    # перевіримо, чи є товари
+    pids = _pids_in_sub(d, cat, sub)
+    cnt = len(pids)
+
+    kb = InlineKeyboardBuilder()
+    if cnt > 0:
+        kb.button(
+            text=f"✅ Так, видалити і перенести {cnt} товар(ів) в 🧷 Утлет",
+            callback_data=f"adm:subdeldo:{cat_i}:{sub_token}:mv"
+        )
+        kb.button(text="❌ Ні", callback_data="adm:cancel")
+        kb.adjust(1)
+
+        await cb.message.answer(
+            f"⚠️ Підкатегорія <b>{sub}</b> містить товарів: <b>{cnt}</b>\n\n"
+            f"Видалити підкатегорію і перенести всі товари в <b>🧷 Утлет</b>?",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+        return await cb.answer()
+
+    # порожня — видаляємо без переносу
+    kb.button(text="✅ Так, видалити", callback_data=f"adm:subdeldo:{cat_i}:{sub_token}:del")
+    kb.button(text="❌ Ні", callback_data="adm:cancel")
+    kb.adjust(2)
+
+    await cb.message.answer(
+        f"⚠️ Видалити підкатегорію <b>{sub}</b> в категорії <b>{cat}</b>?",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
+    return await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:subdeldo:"))
+async def sub_delete_do(cb: types.CallbackQuery):
+    d = await load_data()
+    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
+        return await cb.answer("⛔️ Немає доступу", show_alert=True)
+
+    # adm:subdeldo:<cat_i>:<sub_token>:<mode>
+    parts = cb.data.split(":")
+    cat_i = int(parts[2])
+    sub_token = parts[3]
+    mode = parts[4] if len(parts) > 4 else "del"
+
+    cat = await _cat_by_index(cat_i)
+    sub = await _sub_by_index(cat_i, sub_token)
+
+    if not cat or sub is None:
+        return await cb.answer("Не знайдено", show_alert=True)
+
+    if sub == NO_SUB:
+        return await cb.answer("🧷 Утлет видаляти не можна", show_alert=True)
+
+    cats_map = d.get("categories", {}) or {}
+    subs_map = (cats_map.get(cat, {}) or {})
+
+    # якщо немає такої підкатегорії — нічого робити
+    if sub not in subs_map:
+        return await cb.answer("Підкатегорію не знайдено", show_alert=True)
+
+    # Якщо mode == mv: переносимо pid'и в Утлет, потім видаляємо підкатегорію
+    if mode == "mv":
+        pids = _pids_in_sub(d, cat, sub)
+        subs_map.setdefault(NO_SUB, [])
+        # додаємо без дублікатів
+        exist = set(int(x) for x in subs_map.get(NO_SUB, []) or [] if str(x).isdigit() or isinstance(x, int))
+        for pid in pids:
+            if pid not in exist:
+                subs_map[NO_SUB].append(pid)
+                exist.add(pid)
+
+    # видаляємо підкатегорію (разом зі списком pid)
+    subs_map.pop(sub, None)
+
+    # запис назад
+    cats_map[cat] = subs_map
+    d["categories"] = cats_map
+    await save_data(d)
+
+    await cb.message.answer(f"✅ Підкатегорію <b>{sub}</b> видалено.", parse_mode="HTML")
+    await cb.answer()
