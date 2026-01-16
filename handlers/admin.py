@@ -1,6 +1,7 @@
 # handlers/admin.py
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from aiogram import Router, types, F, Bot
@@ -310,123 +311,7 @@ async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
     )
     await cb.answer()
 
-
 # =========================================================
-# PANEL NAV
-# =========================================================
-
-@router.callback_query(F.data.startswith("adm:panel:"))
-async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    await state.clear()
-    action = cb.data.split(":")[2]
-
-    if action in ("back", "main"):
-        await cb.message.answer("🔧 Панель (Адмін/Персонал)", reply_markup=panel_main_kb(cb.from_user.id))
-        return await cb.answer()
-
-    if action == "catalog":
-        await cb.message.answer("🧩 Каталог:", reply_markup=panel_catalog_kb())
-        return await cb.answer()
-
-    if action == "orders":
-        await cb.message.answer("📑 Замовлення:", reply_markup=panel_orders_kb())
-        return await cb.answer()
-
-    if action == "settings":
-        await cb.message.answer("⚙️ Налаштування:", reply_markup=panel_settings_kb(cb.from_user.id))
-        return await cb.answer()
-
-    # actions -> FSM
-    if action == "add_cat":
-        await state.set_state(AdminFSM.add_cat)
-        await cb.message.answer("Введіть назву категорії:")
-        return await cb.answer()
-
-    if action == "add_sub":
-        await state.set_state(AdminFSM.add_sub_cat)
-        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("sub_add"))
-        return await cb.answer()
-
-    if action == "cats":
-        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("catmgmt"))
-        return await cb.answer()
-
-    if action == "products":
-        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("plist_cat"))
-        return await cb.answer()
-
-    if action == "add_product":
-        await state.set_state(AdminFSM.prod_cat)
-        await cb.message.answer("Оберіть категорію:", reply_markup=await cats_inline("prod_cat"))
-        return await cb.answer()
-
-    # orders lists (реалізація в Part 2/3, щоб юзало нові кнопки/ролі)
-    # ===== ORDERS LISTS =====
-
-    if action == "orders_paid":
-        paid = [o for o in (d.get("orders", []) or []) if o.get("status") in ("paid", "prepay")]
-        if not paid:
-            await cb.message.answer("Немає нових оплачених замовлень.")
-            return await cb.answer()
-
-        for o in paid:
-            products = _order_products(d, o)
-            await cb.message.answer(
-                order_premium_text(d, o, products),
-                parse_mode="HTML",
-                reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
-            )
-        return await cb.answer()
-
-
-    if action == "orders_all":
-        orders = d.get("orders", []) or []
-        if not orders:
-            await cb.message.answer("Замовлень ще немає.")
-            return await cb.answer()
-
-        for o in reversed(orders):
-            products = _order_products(d, o)
-            await cb.message.answer(
-                order_premium_text(d, o, products),
-                parse_mode="HTML",
-                reply_markup=order_actions_kb(int(o["id"]), o.get("status", ""), d=d, uid=cb.from_user.id)
-            )
-        return await cb.answer()
-
-
-    if action == "buyer_search":
-        await state.set_state(AdminFSM.search_buyer)
-        await cb.message.answer(
-            "🔎 <b>Пошук покупця</b>\n\n"
-            "Введіть:\n"
-            "• ID\n"
-            "• @username\n"
-            "• частину імені",
-            parse_mode="HTML"
-        )
-        return await cb.answer()
-
-        return await cb.answer("Невідома дія", show_alert=True)
-
-
-# =========================================================
-# PRODUCT LISTING (CAT -> SUB -> LIST)
-# =========================================================
-
-@router.callback_query(F.data.startswith("adm:plist_cat:cat_i:"))
-async def plist_cat(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[3])
-    await cb.message.answer("Оберіть підкатегорію:", reply_markup=await subs_inline(cat_i, "plist_sub", include_no_sub=True))
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:plist_sub:sub_i:"))
@@ -435,21 +320,27 @@ async def plist_sub(cb: types.CallbackQuery):
     if not is_staff(d, cb.from_user.id):
         return await cb.answer("Немає доступу", show_alert=True)
 
-    _, _, _, cat_i_str, sub_i_str = cb.data.split(":")
-    cat_i = int(cat_i_str)
+    # adm:plist_sub:sub_i:<cat_i>:<sub_i|n>
+    parts = cb.data.split(":")
+    cat_i = int(parts[-2])
+    sub_token = parts[-1]
 
     cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i_str)
+    sub = await _sub_by_index(cat_i, sub_token)
     if not cat or sub is None:
         return await cb.answer("Не знайдено", show_alert=True)
 
-    prods = d.get("products", []) or []
-    filtered = [p for p in prods if (p.get("category") == cat and (p.get("sub_category") or NO_SUB) == sub)]
-    if not filtered:
+    # беремо pid'и з categories (це головне джерело правди)
+    pids = _pids_in_sub(d, cat, sub)
+    if not pids:
         await cb.message.answer("Товарів тут ще немає.")
         return await cb.answer()
 
-    for p in filtered:
+    # показуємо знайдені товари
+    for pid in pids:
+        p = find_product(d, int(pid))
+        if not p:
+            continue
         _ensure_product_schema(p)
         await cb.message.answer(
             product_card(p),
@@ -458,8 +349,6 @@ async def plist_sub(cb: types.CallbackQuery):
         )
 
     await cb.answer()
-# =========================
-# PART 2/3 — ORDERS CORE
 # =========================
 
 import re
@@ -744,7 +633,7 @@ async def order_change_status(cb: types.CallbackQuery, bot: Bot, state: FSMConte
     if action in ("packed",) and not can_mark_packing(d, cb.from_user.id):
         return await cb.answer("⛔️ Недостатньо прав", show_alert=True)
 
-    if action in ("in_work", "shipped", "arrived", "received", "not_picked", "returned", "done", "set_ttn") and not can_mark_logistics(d, cb.from_user.id):
+    if action in ("in_work", "shipped", "arrived", "received", "not_picked", "returned", "done", "set_ttn") and not can_set_ttn(d, cb.from_user.id):
         return await cb.answer("⛔️ Недостатньо прав", show_alert=True)
 
     async def _reply_updated(prefix_text: str):
@@ -1062,73 +951,6 @@ async def add_sub_name(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Підкатегорію <b>{name}</b> додано в <b>{cat}</b>.", parse_mode="HTML", reply_markup=staff_menu(m.from_user.id))
 
 
-# =========================================================
-# PRODUCTS LIST (pick category -> pick sub -> show products)
-# =========================================================
-
-@router.callback_query(F.data.startswith("adm:plist_cat:cat_i:"))
-async def plist_choose_cat(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
-        return await cb.answer("⛔️ Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[3])
-    cat = await _cat_by_index(cat_i)
-    if not cat:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    await cb.message.answer(
-        f"Оберіть підкатегорію в <b>{cat}</b>:",
-        parse_mode="HTML",
-        reply_markup=await subs_inline(cat_i, "plist_sub", include_no_sub=True)
-    )
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:plist_sub:sub_i:"))
-async def plist_choose_sub(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id) or not can_edit_catalog(d, cb.from_user.id):
-        return await cb.answer("⛔️ Немає доступу", show_alert=True)
-
-    # adm:plist_sub:sub_i:<cat_i>:<sub_i>
-    parts = cb.data.split(":")
-    cat_i = int(parts[3])
-    sub_i = parts[4]
-
-    cat = await _cat_by_index(cat_i)
-    sub = await _sub_by_index(cat_i, sub_i)
-    if not cat or sub is None:
-        return await cb.answer("Не знайдено", show_alert=True)
-
-    subs = (d.get("categories", {}) or {}).get(cat, {}) or {}
-    pids = subs.get(sub, []) or []
-
-    if not pids:
-        sub_name = "🧷 Утлет" if sub == NO_SUB else sub
-        await cb.message.answer(f"У підкатегорії <b>{sub_name}</b> товарів поки немає.", parse_mode="HTML")
-        return await cb.answer()
-
-    # показуємо кожен товар окремим повідомленням
-    for pid in pids:
-        try:
-            pid_int = int(pid)
-        except Exception:
-            continue
-        p = find_product(d, pid_int)
-        if not p:
-            continue
-        _ensure_product_schema(p)
-        await cb.message.answer(
-            product_card(p),
-            parse_mode="HTML",
-            reply_markup=await product_actions_kb(pid_int)
-        )
-
-    await cb.answer()
-
-
-# =========================================================
 # PRODUCT ACTIONS: HIT ON/OFF, DELETE ASK/DELETE, EDIT MENU
 # =========================================================
 
@@ -1411,6 +1233,8 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
             "photos": photos,
             "sku": sku,
             "barcode": barcode,
+            "category": cat,
+            "sub_category": sub,
         }
 
         d.setdefault("products", [])
@@ -1464,6 +1288,8 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
             "photos": [],
             "sku": sku,
             "barcode": barcode,
+            "category": cat,
+            "sub_category": sub,
         }
 
         d.setdefault("products", [])
@@ -1891,155 +1717,6 @@ async def search_buyer(m: types.Message, state: FSMContext):
 
     await state.clear()
 
-# =========================
-# CATALOG / CATEGORIES CALLBACKS
-# (додай в кінець handlers/admin.py)
-# =========================
-
-def _product_cat(p: dict) -> str:
-    # підтримка різних схем збереження
-    return str(p.get("cat") or p.get("category") or p.get("cat_name") or "").strip()
-
-def _product_sub(p: dict) -> str:
-    return str(p.get("sub") or p.get("subcategory") or p.get("sub_name") or "").strip()
-
-def _product_in(cat_name: str, sub_name: str, p: dict) -> bool:
-    pc = _product_cat(p)
-    ps = _product_sub(p)
-
-    if pc != str(cat_name):
-        return False
-
-    # утлет = NO_SUB ("_")
-    if sub_name == NO_SUB:
-        return ps in ("", NO_SUB, "None", "null", "0") or ps == NO_SUB
-
-    return ps == str(sub_name)
-
-async def _plist_show_products(msg: types.Message, d: dict, cat_name: str, sub_name: str):
-    prods = d.get("products", []) or []
-    matched = [p for p in prods if _product_in(cat_name, sub_name, p)]
-
-    title_sub = "🧷 Утлет" if sub_name == NO_SUB else sub_name
-    if not matched:
-        await msg.answer(f"Товарів немає у: <b>{cat_name}</b> / <b>{title_sub}</b>", parse_mode="HTML")
-        return
-
-    await msg.answer(f"📦 <b>{cat_name}</b> / <b>{title_sub}</b> — товарів: <b>{len(matched)}</b>", parse_mode="HTML")
-    for p in matched:
-        _ensure_product_schema(p)
-        pid = int(p.get("id", 0) or 0)
-        await msg.answer(
-            product_card(p),
-            parse_mode="HTML",
-            reply_markup=await product_actions_kb(pid)
-        )
-
-# ---------
-# 1) Каталог -> Товари -> вибір категорії
-# callback_data приходить з cats_inline("plist_cat")
-# ---------
-@router.callback_query(F.data.startswith("adm:plist_cat:cat_i:"))
-async def cb_plist_cat(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[-1])
-    cat_name = await _cat_by_index(cat_i)
-    if not cat_name:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    # показуємо підкатегорії + утлет
-    await cb.message.answer(
-        f"Оберіть підкатегорію для: <b>{cat_name}</b>",
-        parse_mode="HTML",
-        reply_markup=await subs_inline(cat_i, "plist_sub", include_no_sub=True)
-    )
-    await cb.answer()
-
-# ---------
-# 2) Каталог -> Товари -> вибір підкатегорії
-# callback_data приходить з subs_inline(cat_i, "plist_sub")
-# ---------
-@router.callback_query(F.data.startswith("adm:plist_sub:sub_i:"))
-async def cb_plist_sub(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    # adm:plist_sub:sub_i:<cat_i>:<sub_i>
-    parts = cb.data.split(":")
-    cat_i = int(parts[-2])
-    sub_i = parts[-1]
-
-    cat_name = await _cat_by_index(cat_i)
-    sub_name = await _sub_by_index(cat_i, sub_i)
-    if not cat_name or sub_name is None:
-        return await cb.answer("Не знайдено", show_alert=True)
-
-    await _plist_show_products(cb.message, d, cat_name, sub_name)
-    await cb.answer()
-
-# ---------
-# 3) Каталог -> Категорії/Підкатегорії -> вибір категорії
-# callback_data приходить з cats_inline("catmgmt")
-# ---------
-@router.callback_query(F.data.startswith("adm:catmgmt:cat_i:"))
-async def cb_catmgmt_cat(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[-1])
-    cat_name = await _cat_by_index(cat_i)
-    if not cat_name:
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    # просто даємо підкатегорії (щоб “утлет” теж реагував)
-    await cb.message.answer(
-        f"🗂 <b>{cat_name}</b>\nОберіть підкатегорію (або утлет):",
-        parse_mode="HTML",
-        reply_markup=await subs_inline(cat_i, "catmgmt_sub", include_no_sub=True)
-    )
-    await cb.answer()
-
-# ---------
-# 4) Категорії/Підкатегорії -> вибір підкатегорії/утлет
-# ---------
-@router.callback_query(F.data.startswith("adm:catmgmt_sub:sub_i:"))
-async def cb_catmgmt_sub(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    parts = cb.data.split(":")
-    cat_i = int(parts[-2])
-    sub_i = parts[-1]
-
-    cat_name = await _cat_by_index(cat_i)
-    sub_name = await _sub_by_index(cat_i, sub_i)
-    if not cat_name or sub_name is None:
-        return await cb.answer("Не знайдено", show_alert=True)
-
-    title_sub = "🧷 Утлет" if sub_name == NO_SUB else sub_name
-
-    # тут поки просто показуємо що це працює + кількість товарів у цьому розділі
-    prods = d.get("products", []) or []
-    cnt = sum(1 for p in prods if _product_in(cat_name, sub_name, p))
-
-    await cb.message.answer(
-        f"✅ Обрано: <b>{cat_name}</b> / <b>{title_sub}</b>\n"
-        f"Товарів у розділі: <b>{cnt}</b>\n\n"
-        f"Якщо треба — далі додамо тут кнопки:\n"
-        f"• ✏️ перейменувати\n"
-        f"• 🗑 видалити\n"
-        f"• 📦 показати товари",
-        parse_mode="HTML"
-    )
-    await cb.answer()
-# =========================================================
-# FIX: "Товари" + "Утлет (NO_SUB)" + керування підкатегоріями
 # =========================================================
 
 def _pids_in_sub(d: dict, cat: str, sub: str) -> list[int]:
@@ -2095,84 +1772,6 @@ async def adm_products_choose_cat(cb: types.CallbackQuery):
         f"📦 <b>Товари</b>\nКатегорія: <b>{cat}</b>\n\nОберіть підкатегорію:",
         parse_mode="HTML",
         reply_markup=await subs_inline(cat_i, "plist_sub", include_no_sub=True),
-    )
-    return await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:plist_sub:sub_i:"))
-async def adm_products_choose_sub(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    # adm:plist_sub:sub_i:<cat_i>:<sub_i|n>
-    parts = cb.data.split(":")
-    cat_i = int(parts[-2])
-    sub_token = parts[-1]
-
-    cats = list((d.get("categories", {}) or {}).keys())
-    if cat_i < 0 or cat_i >= len(cats):
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-    cat = cats[cat_i]
-
-    if sub_token == "n":
-        sub = NO_SUB
-        sub_title = "🧷 Утлет"
-    else:
-        subs_map = (d.get("categories", {}) or {}).get(cat, {}) or {}
-        subs_list = [s for s in subs_map.keys() if s != NO_SUB]
-        try:
-            j = int(sub_token)
-        except Exception:
-            return await cb.answer("Підкатегорію не знайдено", show_alert=True)
-        if j < 0 or j >= len(subs_list):
-            return await cb.answer("Підкатегорію не знайдено", show_alert=True)
-        sub = subs_list[j]
-        sub_title = str(sub)
-
-    pids = _pids_in_sub(d, cat, sub)
-    if not pids:
-        await cb.message.answer(
-            f"📦 <b>{cat}</b> → <b>{sub_title}</b>\n\nТоварів тут ще немає.",
-            parse_mode="HTML",
-        )
-        return await cb.answer()
-
-    await cb.message.answer(
-        f"📦 <b>{cat}</b> → <b>{sub_title}</b>\n\nЗнайдено: <b>{len(pids)}</b>",
-        parse_mode="HTML",
-    )
-
-    for pid in pids:
-        p = find_product(d, pid)
-        if not p:
-            continue
-        _ensure_product_schema(p)
-        await cb.message.answer(
-            product_card(p),
-            parse_mode="HTML",
-            reply_markup=await product_actions_kb(int(p["id"])),
-        )
-
-    return await cb.answer()
-
-
-@router.callback_query(F.data.startswith("adm:catmgmt:cat_i:"))
-async def adm_catmgmt_open(cb: types.CallbackQuery):
-    d = await load_data()
-    if not is_staff(d, cb.from_user.id):
-        return await cb.answer("Немає доступу", show_alert=True)
-
-    cat_i = int(cb.data.split(":")[-1])
-    cats = list((d.get("categories", {}) or {}).keys())
-    if cat_i < 0 or cat_i >= len(cats):
-        return await cb.answer("Категорію не знайдено", show_alert=True)
-
-    cat = cats[cat_i]
-    await cb.message.answer(
-        f"🗂 <b>{cat}</b>\n\nОберіть підкатегорію для керування:",
-        parse_mode="HTML",
-        reply_markup=await subs_inline(cat_i, "catmgmt", include_no_sub=True),
     )
     return await cb.answer()
 
