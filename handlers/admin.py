@@ -131,7 +131,7 @@ async def _sub_by_index(cat_i: int, sub_i: str) -> str | None:
 # MENUS / INLINE KB
 # =========================================================
 
-def staff_menu(uid: int) -> types.ReplyKeyboardMarkup:
+def panel_main_kb(uid: int) -> types.ReplyKeyboardMarkup:
     rows = [
         [types.KeyboardButton(text="➕ Додати категорію"), types.KeyboardButton(text="➕ Додати підкатегорію")],
         [types.KeyboardButton(text="➕ Додати товар"), types.KeyboardButton(text="🛠 Товари")],
@@ -295,8 +295,10 @@ async def cancel_any(m: types.Message, state: FSMContext):
     if not is_staff(d, m.from_user.id):
         return await m.answer("⛔️ Немає доступу")
     await state.clear()
-    await m.answer("Скасовано.", reply_markup=staff_menu(m.from_user.id))
-
+    await m.answer(
+        "Скасовано. 🔧 Панель:",
+        reply_markup=panel_main_kb(m.from_user.id)
+    )
 
 @router.callback_query(F.data == "adm:cancel")
 async def cancel_cb(cb: types.CallbackQuery, state: FSMContext):
@@ -897,7 +899,7 @@ async def add_cat_name(m: types.Message, state: FSMContext):
     await save_data(d)
     await state.clear()
 
-    await m.answer(f"✅ Категорію <b>{name}</b> додано.", parse_mode="HTML", reply_markup=staff_menu(m.from_user.id))
+    await m.answer(f"✅ Категорію <b>{name}</b> додано.", parse_mode="HTML", reply_markup=panel_main_kb(m.from_user.id))
 
 
 # =========================================================
@@ -946,7 +948,7 @@ async def add_sub_name(m: types.Message, state: FSMContext):
     d["categories"][cat][name] = []
     await save_data(d)
     await state.clear()
-    await m.answer(f"✅ Підкатегорію <b>{name}</b> додано в <b>{cat}</b>.", parse_mode="HTML", reply_markup=staff_menu(m.from_user.id))
+    await m.answer(f"✅ Підкатегорію <b>{name}</b> додано в <b>{cat}</b>.", parse_mode="HTML", reply_markup=panel_main_kb(m.from_user.id))
 
 
 # PRODUCT ACTIONS: HIT ON/OFF, DELETE ASK/DELETE, EDIT MENU
@@ -1256,7 +1258,7 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
             f"BARCODE: <code>{barcode}</code>\n"
             f"Категорія: <b>{cat}</b> / <b>{sub_name}</b>\n",
             parse_mode="HTML",
-            reply_markup=staff_menu(m.from_user.id)
+            reply_markup=panel_main_kb(m.from_user.id))
         )
         # покажемо картку
         await m.answer(product_card(p), parse_mode="HTML", reply_markup=await product_actions_kb(pid))
@@ -1301,7 +1303,7 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
         await save_data(d)
         await state.clear()
 
-        await m.answer("✅ Товар створено (без фото).", reply_markup=staff_menu(m.from_user.id))
+        await m.answer("✅ Товар створено (без фото).", reply_markup=panel_main_kb(m.from_user.id))
         await m.answer(product_card(p), parse_mode="HTML", reply_markup=await product_actions_kb(pid))
         return
 
