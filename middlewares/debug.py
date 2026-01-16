@@ -1,71 +1,61 @@
 # middlewares/debug.py
-from __future__ import annotations
-
-import time
 import traceback
-from typing import Any, Dict
+import logging
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Update
 
 
-def _mask(text: str) -> str:
-    """
-    Мінімальна маска: ховаємо довгі послідовності цифр (телефони/ТТН)
-    щоб не світити приватні дані в логах.
-    """
-    if not text:
-        return ""
-    out = []
-    digits_run = 0
-    for ch in text:
-        if ch.isdigit():
-            digits_run += 1
-            # показуємо тільки перші 2 цифри, решту маскуємо
-            out.append(ch if digits_run <= 2 else "•")
-        else:
-            digits_run = 0
-            out.append(ch)
-    return "".join(out)
+log = logging.getLogger(__name__)
 
 
 class DebugMiddleware(BaseMiddleware):
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
 
-    async def __call__(self, handler, event, data: Dict[str, Any]):
-        if not self.enabled:
+    async def __call__(self, handler, event: Update, data):
+        try:
             return await handler(event, data)
 
-        t0 = time.time()
-
-        try:
-            # --- INPUT LOG ---
-            if isinstance(event, CallbackQuery):
-                uid = event.from_user.id if event.from_user else None
-                cd = event.data or ""
-                print(f"[DBG] CB  uid={uid} data={_mask(cd)}")
-
-            elif isinstance(event, Message):
-                uid = event.from_user.id if event.from_user else None
-                txt = event.text or event.caption or ""
-                # маскуємо
-                txt_m = _mask(txt)
-                if txt_m:
-                    print(f"[DBG] MSG uid={uid} text={txt_m[:200]}")
-                else:
-                    print(f"[DBG] MSG uid={uid} (non-text msg)")
-
-            # --- RUN HANDLER ---
-            res = await handler(event, data)
-
-            # --- OK LOG ---
-            dt = int((time.time() - t0) * 1000)
-            print(f"[DBG] OK  {dt}ms")
-            return res
-
         except Exception as e:
-            dt = int((time.time() - t0) * 1000)
-            print(f"[DBG] ERR {dt}ms {type(e).__name__}: {e}")
-            print(traceback.format_exc())
-            raise
+            tb = traceback.format_exc()
+
+            log.error("🔥 BOT ERROR:\n%s", tb)
+
+            if not self.enabled:
+                raise
+
+            # --- Людське пояснення ---
+            human = self._human_message(e)
+
+            # якщо є message — відповімо користувачу
+            msg = data.get("event_message") or getattr(event, "message", None)
+            if msg:
+                try:
+                    await msg.answer(
+                        "⚠️ Сталася внутрішня помилка.\n\n"
+                        f"{human}\n\n"
+                        "Ми вже знаємо про проблему 👨‍💻"
+                    )
+                except Exception:
+                    pass
+
+            # ❗ НЕ валимо бота
+            return None
+
+    def _human_message(self, e: Exception) -> str:
+        text = str(e)
+
+        if isinstance(e, AttributeError):
+            return "Система очікувала обʼєкт, але отримала інше значення."
+
+        if isinstance(e, KeyError):
+            return "Відсутні необхідні дані. Можливо, старий формат збережених даних."
+
+        if isinstance(e, TypeError):
+            return "Неправильний тип даних. Дані виглядають пошкодженими."
+
+        if "int has no attribute get" in text:
+            return "В одному з місць товар або замовлення збережене в старому форматі."
+
+        return "Технічна помилка. Деталі вже зафіксовано."
