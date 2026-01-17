@@ -1541,9 +1541,18 @@ async def order_finish(m: types.Message, state: FSMContext):
             qty_i = int(qty)
         except Exception:
             continue
-        if qty_i > 0:
-            items_pack.append({"pid": pid_i, "qty": qty_i})
+        if qty_i <= 0:
+            continue
 
+        p = find_product(d, pid_i) or {}
+        items_pack.append({
+            "pid": pid_i,
+            "qty": qty_i,
+
+        # ✅ снапшот на момент замовлення
+            "sku": (p.get("sku") or "").strip(),
+            "name": (p.get("name") or "").strip(),
+        })
     d.setdefault("orders", [])
     order = {
         "id": oid,
