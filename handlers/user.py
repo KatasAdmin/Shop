@@ -4,6 +4,7 @@ import re
 import math
 from typing import Tuple, List, Dict, Optional
 
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
 from aiogram import Router, F, types, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -564,25 +565,196 @@ async def sub_back(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# ===================== HITS / FAVS =====================
+# ===================== HITS / PROMO (PAGED, ONE MESSAGE) =====================
+
+def hits_menu_kb() -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔥 Хіти", callback_data="ha:open:hits:0")
+    kb.button(text="🏷 Акції", callback_data="ha:open:promo:0")
+    kb.button(text="⬅️ Назад", callback_data="ha:back")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
+def hits_page_kb(kind: str, i: int, total: int, pid: int, fav: bool) -> types.InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+
+    # дії
+    kb.button(text="🛒 В кошик", callback_data=f"add:{pid}")
+    kb.button(
+        text=("❌ З обраного" if fav else "⭐ В обране"),
+        callback_data=f"fav:{'off' if fav else 'on'}:{pid}"
+    )
+    kb.adjust(2)
+
+    # пагінація
+    prev_cb = "noop" if i <= 0 else f"ha:nav:{kind}:{i-1}"
+    next_cb = "noop" if i >= total - 1 else f"ha:nav:{kind}:{i+1}"
+
+    kb.button(text="⬅️", callback_data=prev_cb)
+    kb.button(text=f"{i+1}/{total}", callback_data="noop")
+    kb.button(text="➡️", callback_data=next_cb)
+
+    # назад в меню хіти/акції
+    kb.button(text="⬅️ До меню Хіти/Акції", callback_data="ha:menu")
+
+    kb.adjust(2, 3, 1)
+    return kb.as_markup()
+
+
+def _hits_ids_list(d: dict) -> List[int]:
+    ids = []
+    for x in (d.get("hits", []) or []):
+        try:
+            ids.append(int(x))
+        except Exception:
+            pass
+    # uniq preserving order
+    seen = set()
+    out = []
+    for pid in ids:
+        if pid not in seen:
+            seen.add(pid)
+            out.append(pid)
+    return out
+
+
+def _promo_ids_list(d: dict, now_ts: int) -> List[int]:
+    out = []
+    for p in (d.get("products", []) or []):
+        try:
+            pid = int(p.get("id", 0) or 0)
+        except Exception:
+            continue
+        if pid and _promo_active(p, now_ts):
+            out.append(pid)
+    return out
+
+
+async def _show_hits_page(cb: types.CallbackQuery, kind: str, i: int):
+    d = await load_data()
+    now_ts = int(time.time())
+
+    if kind == "promo":
+        pids = _promo_ids_list(d, now_ts)
+        title = "🏷 <b>Акції</b>"
+    else:
+        pids = _hits_ids_list(d)
+        title = "🔥 <b>Хіти</b>"
+
+    if not pids:
+        txt = f"{title}\n\nПоки що порожньо."
+        # якщо ми на фото — простіше видалити і надіслати текст
+        if cb.message and cb.message.photo:
+            await _safe_delete(cb.message)
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=hits_menu_kb())
+            return
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=hits_menu_kb())
+        except Exception:
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=hits_menu_kb())
+        return
+
+    total = len(pids)
+    i = max(0, min(int(i), total - 1))
+
+    pid = int(pids[i])
+    p = find_product(d, pid)
+    if not p:
+        # пропускаємо битий pid
+        # пробуємо знайти наступний живий
+        for j in range(total):
+            pid2 = int(pids[(i + j) % total])
+            p2 = find_product(d, pid2)
+            if p2:
+                pid = pid2
+                p = p2
+                i = (i + j) % total
+                break
+        if not p:
+            txt = f"{title}\n\nТовари не знайдені (биті pid)."
+            if cb.message and cb.message.photo:
+                await _safe_delete(cb.message)
+                await cb.message.answer(txt, parse_mode="HTML", reply_markup=hits_menu_kb())
+                return
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=hits_menu_kb())
+            return
+
+    txt = title + "\n\n" + product_card(p)
+    fav = is_fav(d, cb.from_user.id, pid)
+    kb = hits_page_kb(kind, i, total, pid, fav)
+
+    photos = p.get("photos", []) or []
+    if photos:
+        media = types.InputMediaPhoto(media=photos[0], caption=txt, parse_mode="HTML")
+        try:
+            await cb.message.edit_media(media=media, reply_markup=kb)
+        except Exception:
+            await _safe_delete(cb.message)
+            await cb.message.answer_photo(photos[0], caption=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        try:
+            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await _safe_delete(cb.message)
+            await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
 
 @router.message(F.text == "🔥 Хіти/Акції")
-async def hits(m: types.Message):
-    d = await load_data()
-    hits_ids = set(int(x) for x in (d.get("hits", []) or []))
-    if not hits_ids:
-        return await m.answer("Поки що немає Хітів/Акцій.")
+async def hits_menu(m: types.Message):
+    await m.answer("🔥 <b>Хіти/Акції</b>\n\nОбери розділ:", parse_mode="HTML", reply_markup=hits_menu_kb())
 
-    shown = 0
-    for pid in hits_ids:
-        p = find_product(d, int(pid))
-        if p:
-            shown += 1
-            await send_product(m, d, m.from_user.id, p)
 
-    if shown == 0:
-        await m.answer("Хіти є, але товари не знайдені.")
+@router.callback_query(F.data == "ha:menu")
+async def ha_menu(cb: types.CallbackQuery):
+    # повернутись в меню Хіти/Акції
+    if cb.message and cb.message.photo:
+        await _safe_delete(cb.message)
+        await cb.message.answer("🔥 <b>Хіти/Акції</b>\n\nОбери розділ:", parse_mode="HTML", reply_markup=hits_menu_kb())
+        return await cb.answer()
+    await cb.message.edit_text("🔥 <b>Хіти/Акції</b>\n\nОбери розділ:", parse_mode="HTML", reply_markup=hits_menu_kb())
+    await cb.answer()
 
+
+@router.callback_query(F.data == "ha:back")
+async def ha_back(cb: types.CallbackQuery):
+    # назад в головне меню (reply kb)
+    if cb.message and cb.message.photo:
+        await _safe_delete(cb.message)
+        await cb.message.answer("🏠 Меню", reply_markup=main_menu())
+        return await cb.answer()
+    try:
+        await cb.message.edit_text("🏠 Меню")
+    except Exception:
+        pass
+    await cb.message.answer("🏠 Меню", reply_markup=main_menu())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("ha:open:"))
+async def ha_open(cb: types.CallbackQuery):
+    # ha:open:<hits|promo>:<i>
+    try:
+        _, _, kind, i_str = cb.data.split(":")
+        i = int(i_str)
+    except Exception:
+        return await cb.answer("Некоректна дія", show_alert=True)
+
+    await _show_hits_page(cb, kind, i)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("ha:nav:"))
+async def ha_nav(cb: types.CallbackQuery):
+    # ha:nav:<hits|promo>:<i>
+    try:
+        _, _, kind, i_str = cb.data.split(":")
+        i = int(i_str)
+    except Exception:
+        return await cb.answer()
+
+    await _show_hits_page(cb, kind, i)
+    await cb.answer()
 
 # ---------- FAVS PAGED ----------
 
@@ -909,6 +1081,14 @@ async def fav_toggle(cb: types.CallbackQuery):
             if page_btn:
                 _, cat, sub, i_str = page_btn.split(":", 3)
                 await show_product_page(cb, cat, sub, int(i_str))
+                return
+            ha_btn = next((x for x in all_cb if x.startswith("ha:nav:") or x.startswith("ha:open:")), None)
+            if ha_btn:
+                parts = ha_btn.split(":")
+                # ha:nav:kind:i  або ha:open:kind:i
+                kind = parts[2]
+                i_str = parts[3]
+                await _show_hits_page(cb, kind, int(i_str))
                 return
 
             # інакше просто міняємо клавіатуру як на картці з hits
