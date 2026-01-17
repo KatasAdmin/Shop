@@ -285,6 +285,7 @@ async def product_actions_kb(pid: int) -> types.InlineKeyboardMarkup:
 def panel_main_kb(uid: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🧩 Каталог", callback_data="adm:panel:catalog")
+    kb.button(text="📄 Накладна (нові)", callback_data="adm:panel:picklist_new")
     kb.button(text="📑 Замовлення", callback_data="adm:panel:orders")
     kb.button(text="⚙️ Налаштування", callback_data="adm:panel:settings")
     kb.adjust(1)
@@ -305,6 +306,7 @@ def panel_catalog_kb() -> types.InlineKeyboardMarkup:
 
 def panel_orders_kb() -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="📄 Накладна (нові)", callback_data="adm:panel:picklist_new")
     kb.button(text="📋 Нові (оплачені)", callback_data="adm:panel:orders_paid")
     kb.button(text="📦 Усі замовлення", callback_data="adm:panel:orders_all")
     kb.button(text="🔎 Пошук покупця", callback_data="adm:panel:buyer_search")
@@ -518,6 +520,26 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
                 reply_markup=order_actions_kb(int(o["id"]), str(o.get("status", "")), d=d, uid=cb.from_user.id)
             )
+        return await cb.answer()
+        
+    if action == "picklist_new":
+        if not can_manage_orders(d, cb.from_user.id):
+            return await cb.answer("⛔️ Недостатньо прав", show_alert=True)
+
+        orders = d.get("orders", []) or []
+    # “нові/в роботі” — налаштуй під себе:
+        new_orders = [o for o in orders if (o.get("status") or "").strip().lower() in ("pending", "paid", "prepay", "new", "in_work")]
+
+        if not new_orders:
+            await cb.message.answer("✅ Немає нових замовлень для складу.")
+            return await cb.answer()
+
+    # найновіші зверху:
+        new_orders.sort(key=lambda x: int(x.get("created_ts", 0) or 0), reverse=True)
+
+        for o in new_orders:
+            await cb.message.answer(picklist_order_text(d, o), parse_mode="HTML")
+
         return await cb.answer()
 
     if action == "buyer_search":
@@ -1809,6 +1831,72 @@ async def prod_photos_collect(m: types.Message, state: FSMContext):
 
     return await m.answer("Надішліть фото або напишіть <code>готово</code> / <code>-</code>.", parse_mode="HTML")
 
+
+# =========================================================
+# PICKLIST / НАКЛАДНА (SKU × QTY) — для складу
+# =========================================================
+
+def _order_delivery(o: dict) -> dict:
+    dd = o.get("delivery") or {}
+    return dd if isinstance(dd, dict) else {}
+
+def _item_sku_name_qty(d: dict, it: dict) -> tuple[str, str, int]:
+    # беремо зі снапшота (order.items), якщо нема — доберемо з products
+    sku = (it.get("sku") or "").strip()
+    name = (it.get("name") or "").strip()
+
+    pid = it.get("pid")
+    if (not sku or not name) and pid is not None:
+        p = find_product(d, int(pid)) or {}
+        if not sku:
+            sku = (p.get("sku") or "").strip()
+        if not name:
+            name = (p.get("name") or "").strip()
+
+    try:
+        qty = int(it.get("qty", 0) or 0)
+    except Exception:
+        qty = 0
+
+    return sku, name, qty
+
+def picklist_order_text(d: dict, o: dict) -> str:
+    oid = int(o.get("id", 0) or 0)
+    deliv = _order_delivery(o)
+
+    name = (deliv.get("name") or o.get("user_full_name") or "—").strip()
+    phone = (deliv.get("phone") or "").strip()
+    city = (deliv.get("city") or "").strip()
+    branch = (deliv.get("np_branch") or "").strip()
+    comment = (deliv.get("comment") or "").strip()
+
+    lines = []
+    lines.append(f"📄 <b>НАКЛАДНА · #{oid}</b>")
+    lines.append(f"👤 {escape(name)}")
+    if phone:
+        lines.append(f"📞 <code>{escape(phone)}</code>")
+    if city or branch:
+        lines.append(f"📍 {escape(city)} · {escape(branch)}")
+
+    lines.append("")
+    lines.append("🧾 <b>Позиції:</b>")
+
+    for it in (o.get("items") or []):
+        if not isinstance(it, dict):
+            continue
+        sku, pname, qty = _item_sku_name_qty(d, it)
+        if qty <= 0:
+            continue
+
+        sku_txt = escape(sku) if sku else "—"
+        pname_txt = escape(pname) if pname else "Товар"
+        lines.append(f"• <code>{sku_txt}</code> — <b>{qty}</b> шт — {pname_txt}")
+
+    if comment:
+        lines.append("")
+        lines.append(f"💬 {escape(comment)}")
+
+    return "\n".join(lines).strip()
 
 # =========================================================
 # EDIT PRODUCT (FSM)
