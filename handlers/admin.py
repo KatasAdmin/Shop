@@ -13,6 +13,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from data import default_data, save_data, load_data
 from data import load_data, save_data, next_product_id, find_product
 from states import AdminFSM, EditProductFSM
 from utils import is_admin, is_staff, notify_user, format_order_text
@@ -2589,3 +2590,28 @@ async def buyer_orders_cb(cb: types.CallbackQuery):
         await cb.message.answer(order_premium_text(d, o, products), parse_mode="HTML", reply_markup=kb)
 
     await cb.answer()
+
+@router.message(Command("reset_shop"))
+async def admin_reset_shop(m: types.Message):
+    d = await load_data()
+    if not is_admin(m.from_user.id):
+        return await m.answer("⛔️ Тільки адмін")
+
+    # зберігаємо мінімум що треба НЕ губити (опційно):
+    keep_roles = d.get("roles", {})
+    keep_managers = d.get("managers", [])
+
+    nd = default_data()
+    nd["roles"] = keep_roles
+    nd["managers"] = keep_managers
+
+    await save_data(nd)
+
+    await m.answer(
+        "✅ Базу магазину очищено.\n\n"
+        "Залишив:\n"
+        f"• roles: {len(keep_roles)}\n"
+        f"• managers: {len(keep_managers)}\n\n"
+        "Каталог/кошики/замовлення/обране — скинуто.",
+        parse_mode="HTML"
+    )
