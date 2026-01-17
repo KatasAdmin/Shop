@@ -508,7 +508,10 @@ async def panel_nav(cb: types.CallbackQuery, state: FSMContext):
             await cb.message.answer("Замовлень ще немає.")
             return await cb.answer()
 
-        for o in reversed(orders):
+        orders = d.get("orders", []) or []
+        orders_sorted = sorted(orders, key=lambda x: int(x.get("created_ts", 0) or 0))
+
+        for o in orders_sorted:
             products = _order_products(d, o)
             await cb.message.answer(
                 order_premium_text(d, o, products),
